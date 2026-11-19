@@ -10,6 +10,7 @@ const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
 const crypto = require('crypto');
+const usage = require('./usage');
 
 /* ---------------- Konfigurasi ---------------- */
 const ROOT = __dirname;
@@ -33,6 +34,11 @@ const DEFAULT_CONFIG = {
   perintahClaude: 'claude',
   // PIN akses. Wajib dikirim oleh web (otomatis lewat link yang dicetak saat server jalan).
   pin: '',
+  // Fase 0 (dasbor token): folder vault Obsidian (berisi INDEX.md + repos.md).
+  vault: '',
+  // folderLog kosong = ~/.claude/projects + configDir tiap akun. akun/org: uuid -> nama tampilan.
+  // fileLimit: plan-usage-history.json Claude Desktop (opsional, '' = tidak dibaca).
+  usage: { folderLog: [], akun: {}, org: {}, fileLimit: '' },
 };
 let CFG = DEFAULT_CONFIG;
 try { CFG = Object.assign({}, DEFAULT_CONFIG, JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf8'))); }
@@ -244,14 +250,18 @@ function broadcast() { if (bcTimer) return; bcTimer = setTimeout(() => { bcTimer
 function body(req) { return new Promise(r => { let b = ''; req.on('data', d => { b += d; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch (e) { r({}); } }); }); }
 function send(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); }
 const WEB = path.join(ROOT, '..', 'index.html');
+const DASBOR = path.join(ROOT, '..', 'dashboard.html');
 
 http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x'); const p = u.pathname.split('/').filter(Boolean);
   try {
     if (req.method === 'GET' && (u.pathname === '/' || u.pathname === '/index.html')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return fs.createReadStream(WEB).pipe(res); }
+    if (req.method === 'GET' && u.pathname === '/dashboard.html') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return fs.createReadStream(DASBOR).pipe(res); }
     if (p[0] !== 'api') { res.writeHead(404); return res.end('Tidak ada'); }
     if ((req.headers['x-pin'] || u.searchParams.get('pin')) !== CFG.pin) return send(res, 401, { error: 'PIN salah' });
     if (p[1] === 'state') return send(res, 200, JSON.parse(snapshot()));
+    if (req.method === 'GET' && p[1] === 'usage') return send(res, 200, await usage.ringkasan(CFG));
+    if (req.method === 'GET' && p[1] === 'projects') return send(res, 200, usage.proyek(CFG));
     if (p[1] === 'events') { res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' }); res.write('data: ' + snapshot() + '\n\n'); clients.add(res); req.on('close', () => clients.delete(res)); return; }
     if (req.method !== 'POST') return send(res, 405, { error: 'Pakai POST' });
     const b = await body(req);
@@ -282,6 +292,8 @@ http.createServer(async (req, res) => {
   const ips = Object.values(os.networkInterfaces()).flat().filter(i => i && i.family === 'IPv4' && !i.internal).map(i => i.address);
   console.log('\nKantor Agen jalan.');
   console.log('  Di laptop : http://localhost:' + CFG.port + '/?pin=' + CFG.pin);
+  console.log('  Dasbor    : http://localhost:' + CFG.port + '/dashboard.html?pin=' + CFG.pin);
+  usage.panaskan(CFG);
   ips.forEach(ip => console.log('  Di HP (wifi yang sama): http://' + ip + ':' + CFG.port + '/?pin=' + CFG.pin));
   console.log('  PIN      : ' + CFG.pin + '  (jangan dibagikan)');
   console.log('  Data     : ' + CFG.folderData);

@@ -33,6 +33,15 @@ Syarat: Node.js 18+ (`node -v`) dan Claude Code yang sudah login (`claude` lalu 
 | `model` | `manajer` dan `staf` (alias Claude Code: `opus`, `sonnet`, `haiku`) |
 | `batasBiaya` | 0 = tanpa batas; selain itu workspace dijeda saat biaya-setara mencapai angka ini |
 | `pin` | PIN akses web; ganti kalau bocor |
+| `vault` | folder vault Obsidian (berisi `INDEX.md` + `repos.md`) untuk daftar project di dasbor |
+| `usage.folderLog` | folder log Claude Code (`...\.claude\projects`). Kosong = login default + `configDir` tiap akun |
+| `usage.akun` / `usage.org` | `accountUuid` / `organizationUuid` → nama tampilan akun |
+| `usage.fileLimit` | opsional: `plan-usage-history.json` Claude Desktop (sampel persen limit). Kosong = tidak dibaca |
+
+## Dasbor token (Fase 0)
+`http://localhost:4321/dashboard.html?pin=XXXXXX` (link dicetak saat server jalan). Membaca log JSONL Claude Code secara read-only: ringkasan 7 hari per akun, token per hari, per project, 10 sesi termahal, per model, daftar project vault. API: `GET /api/usage`, `GET /api/projects` (PIN sama).
+- Akun dikenali dari baris `session-owner` di log; sesi tanpa baris itu (Claude Desktop, CLI lama) tampil sebagai "tak diketahui".
+- Respons API yang ditulis berulang (satu baris per blok konten) di-dedup per `message.id` + `requestId` — angka harian sama dengan `ccusage daily`.
 
 ## Kontrol 3D
 Geser 1 jari = putar kamera, 2 jari = zoom/geser, scroll = zoom, ketuk agen = detail + chat.

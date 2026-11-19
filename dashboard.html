@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Dasbor Token</title>
+<style>
+:root{
+  --bg:#e7ebf0; --panel:#ffffff; --fg:#18202b; --muted:#5b6676; --line:rgba(24,32,43,.12); --chip:#eef1f5;
+  --accent:#3d5afe; --ok:#1f9d57; --warn:#c77700; --bad:#d23c3c;
+  --s1:#2a78d6; --s2:#eb6834; --s0:#8a8f98;
+  --f-body:ui-sans-serif,system-ui,"Segoe UI",sans-serif; --f-mono:ui-monospace,"Cascadia Mono",Consolas,monospace; --r:14px;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0f141b; --panel:#18202b; --fg:#e8edf3; --muted:#93a0b2; --line:rgba(232,237,243,.12); --chip:#222c39;
+  --accent:#7c8cff; --ok:#4cc985; --warn:#f0a83a; --bad:#f06b6b; --s1:#3987e5; --s2:#d95926; --s0:#6b7380; color-scheme:dark;}}
+:root[data-theme="dark"]{
+  --bg:#0f141b; --panel:#18202b; --fg:#e8edf3; --muted:#93a0b2; --line:rgba(232,237,243,.12); --chip:#222c39;
+  --accent:#7c8cff; --ok:#4cc985; --warn:#f0a83a; --bad:#f06b6b; --s1:#3987e5; --s2:#d95926; --s0:#6b7380; color-scheme:dark;}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font-family:var(--f-body);font-size:14px;line-height:1.45}
+header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:16px 20px;max-width:1200px;margin:0 auto}
+header h1{margin:0;font-size:18px;font-weight:650;letter-spacing:-.01em;margin-right:auto}
+.meta{color:var(--muted);font-size:12px;font-family:var(--f-mono)}
+button,a.btn{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--fg);border-radius:10px;padding:6px 12px;cursor:pointer;text-decoration:none}
+button:hover,a.btn:hover{border-color:var(--accent)}
+main{max-width:1200px;margin:0 auto;padding:0 20px 40px;display:grid;gap:16px}
+section{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px 18px;min-width:0}
+section>h2{margin:0 0 4px;font-size:15px;font-weight:650}
+.sub{color:var(--muted);font-size:12px;margin:0 0 12px;text-wrap:pretty}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+.tile{border:1px solid var(--line);border-radius:12px;padding:12px 14px}
+.tile h3{margin:0 0 8px;font-size:13px;font-weight:600;display:flex;align-items:center;gap:8px}
+.sw{width:10px;height:10px;border-radius:3px;display:inline-block;flex:none}
+.big{font-size:26px;font-weight:650;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:12.5px;margin-top:6px}
+.kv dt{color:var(--muted)} .kv dd{margin:0;text-align:right;font-family:var(--f-mono);font-variant-numeric:tabular-nums}
+.limit{margin-top:8px;padding-top:8px;border-top:1px dashed var(--line);font-size:12px;color:var(--muted)}
+.bar{height:6px;background:var(--chip);border-radius:3px;overflow:hidden;margin:3px 0 6px}
+.bar>i{display:block;height:100%;background:var(--fg);opacity:.55;border-radius:3px}
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:12.5px}
+th,td{padding:6px 8px;border-bottom:1px solid var(--line);text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+th{font-weight:600;color:var(--muted);font-size:11.5px;position:sticky;top:0;background:var(--panel)}
+th:first-child,td:first-child,td.l,th.l{text-align:left}
+td.wrap{white-space:normal;min-width:180px}
+tr:hover td{background:var(--chip)}
+.mono{font-family:var(--f-mono)}
+.hi{color:var(--bad);font-weight:600}
+.chart{position:relative;height:220px;display:flex;align-items:flex-end;gap:2px;padding-left:44px;border-bottom:1px solid var(--line)}
+.col{flex:1;display:flex;flex-direction:column-reverse;gap:2px;height:100%;justify-content:flex-start;cursor:default;min-width:4px}
+.col>i{display:block;border-radius:0}
+.col>i:last-child{border-radius:4px 4px 0 0}
+.col:hover>i{filter:brightness(1.12)}
+.yax{position:absolute;left:0;top:0;bottom:0;width:40px;font-size:10.5px;color:var(--muted);font-family:var(--f-mono)}
+.yax span{position:absolute;right:4px;transform:translateY(50%)}
+.grid{position:absolute;left:44px;right:0;border-top:1px dashed var(--line);pointer-events:none}
+.xax{display:flex;gap:2px;padding-left:44px;font-size:10.5px;color:var(--muted);font-family:var(--f-mono);margin-top:4px}
+.xax span{flex:1;text-align:center;min-width:4px;overflow:visible;white-space:nowrap}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-bottom:8px}
+.legend span{display:flex;align-items:center;gap:6px}
+#tip{position:fixed;pointer-events:none;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:8px 10px;font-size:12px;display:none;z-index:9;min-width:180px}
+#tip b{display:block;margin-bottom:4px}
+#tip div{display:flex;justify-content:space-between;gap:12px} #tip div span:last-child{font-family:var(--f-mono)}
+.tabs{display:flex;gap:6px;margin-bottom:10px}
+.tabs button[aria-pressed="true"]{border-color:var(--accent);color:var(--accent)}
+.err{color:var(--bad);font-family:var(--f-mono);font-size:12px;white-space:pre-wrap}
+.links a{color:var(--accent);margin-right:8px}
+.chip{display:inline-block;font-size:11px;padding:1px 7px;border-radius:999px;background:var(--chip);color:var(--muted)}
+details summary{cursor:pointer;color:var(--muted);font-size:12px;margin-top:8px}
+@media (max-width:640px){header,main{padding-left:16px;padding-right:16px}.chart{height:180px}}
+</style>
+</head>
+<body>
+<header>
+  <h1>Dasbor token</h1>
+  <span class="meta" id="meta">memuat…</span>
+  <button id="muat">Muat ulang</button>
+  <button id="tema" title="Ganti tema">Tema</button>
+  <a class="btn" id="kantor" href="/">Kantor</a>
+</header>
+<main>
+  <div id="galat" class="err"></div>
+  <section>
+    <h2>7 hari terakhir per akun</h2>
+    <p class="sub" id="subMinggu"></p>
+    <div class="tiles" id="tiles"></div>
+  </section>
+  <section>
+    <h2>Token per hari</h2>
+    <p class="sub">Total token (input + output + tulis cache + baca cache) per hari, ditumpuk per akun. Arahkan kursor ke batang untuk rincian.</p>
+    <div class="legend" id="legend"></div>
+    <div class="chart" id="chart"></div>
+    <div class="xax" id="xax"></div>
+    <details><summary>Lihat sebagai tabel</summary><div class="tw" id="tabHari"></div></details>
+  </section>
+  <section>
+    <h2>Per project</h2>
+    <p class="sub" id="subProj"></p>
+    <div class="tabs"><button data-p="tebak" aria-pressed="true">Tebakan (path alat)</button><button data-p="cwd" aria-pressed="false">Menurut cwd saja</button></div>
+    <div class="tw" id="tabProj"></div>
+  </section>
+  <section>
+    <h2>10 sesi termahal</h2>
+    <p class="sub" id="subSesi"></p>
+    <div class="tw" id="tabSesi"></div>
+  </section>
+  <section>
+    <h2>Per model</h2>
+    <div class="tw" id="tabModel"></div>
+    <details><summary>Kena limit (respons 429 di log)</summary><div class="tw" id="tabLimit"></div></details>
+  </section>
+  <section>
+    <h2>Daftar project</h2>
+    <p class="sub" id="subDaftar">Dari INDEX.md + repos.md vault.</p>
+    <div class="tw" id="tabDaftar"></div>
+  </section>
+</main>
+<div id="tip"></div>
+<script>
+'use strict';
+const PIN = new URLSearchParams(location.search).get('pin') || '';
+document.getElementById('kantor').href = '/?pin=' + encodeURIComponent(PIN);
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fC = new Intl.NumberFormat('id-ID', { notation: 'compact', maximumFractionDigits: 1 });
+const fN = new Intl.NumberFormat('id-ID');
+const n = (x) => fC.format(x || 0);
+const pct = (x) => ((x || 0) * 100).toLocaleString('id-ID', { maximumFractionDigits: 1 }) + '%';
+const tgl = (t) => t ? new Date(t).toLocaleString('id-ID', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '-';
+
+// Tema: ikut sistem, bisa dipaksa terang/gelap (disimpan per browser).
+const temaUrut = ['', 'light', 'dark'];
+function pasangTema(t) { if (t) document.documentElement.dataset.theme = t; else delete document.documentElement.dataset.theme; $('tema').textContent = 'Tema: ' + ({ '': 'sistem', light: 'terang', dark: 'gelap' }[t]); }
+let tema = ''; try { tema = localStorage.getItem('dasbor-tema') || ''; } catch (e) {}
+pasangTema(tema);
+$('tema').onclick = () => { tema = temaUrut[(temaUrut.indexOf(tema) + 1) % 3]; try { localStorage.setItem('dasbor-tema', tema); } catch (e) {} pasangTema(tema); };
+
+// Warna akun: urutan tetap mengikuti nama akun (bukan peringkat). "tak diketahui" = abu netral.
+const warnaAkun = (nama, semua) => nama === 'tak diketahui' ? 'var(--s0)' : ['var(--s1)', 'var(--s2)'][semua.filter(x => x !== 'tak diketahui').sort().indexOf(nama)] || 'var(--s0)';
+
+async function api(p) { const r = await fetch('/api/' + p, { headers: { 'x-pin': PIN } }); const j = await r.json(); if (!r.ok) throw new Error(j.error || r.status); return j; }
+
+const KOL = [
+  ['total', 'Total'], ['inp', 'Input'], ['out', 'Output'], ['cw', 'Tulis cache'], ['cr', 'Baca cache'],
+  ['rasioCacheRead', 'Rasio baca cache', pct], ['konteksRata', 'Konteks/panggilan'], ['panggilan', 'Panggilan', fN.format], ['beban', 'Beban'],
+];
+function tabel(rows, kunci, label) {
+  return '<table><thead><tr><th class="l">' + label + '</th>' + KOL.map(k => '<th>' + k[1] + '</th>').join('') + '</tr></thead><tbody>' +
+    rows.map(([nama, a]) => '<tr><td>' + esc(nama) + '</td>' + KOL.map(k => '<td title="' + fN.format(a[k[0]] || 0) + '">' + (k[2] || n)(a[k[0]]) + '</td>').join('') + '</tr>').join('') + '</tbody></table>';
+}
+
+let U = null, modeProj = 'tebak';
+function render() {
+  const u = U;
+  $('meta').textContent = u.sumber.file + ' file · ' + fN.format(u.sumber.respons) + ' respons · ' + u.sumber.sesi + ' sesi · ' + tgl(u.dibuat) + ' (' + u.durasiMs + ' ms)';
+  const semuaAkun = Object.keys(u.perAkun);
+  // Ringkasan 7 hari.
+  $('subMinggu').textContent = u.catatan.minggu + ' ' + u.catatan.akun;
+  const lim = u.limit || { akun: [] };
+  $('tiles').innerHTML = Object.entries(u.mingguIni).sort((a, b) => b[1].total - a[1].total).map(([nama, a]) => {
+    const l = lim.akun.find(x => x.nama === nama);
+    const limitHtml = nama === 'tak diketahui' ? '<div class="limit">Sesi tanpa baris session-owner (sesi Claude Desktop atau CLI lama).</div>' :
+      '<div class="limit">' + (l ? 'Limit (sampel Claude Desktop, ' + tgl(l.t) + '):<br>5 jam ' + l.persen5Jam + '%<div class="bar"><i style="width:' + Math.min(100, l.persen5Jam) + '%"></i></div>7 hari ' + l.persen7Hari + '%<div class="bar"><i style="width:' + Math.min(100, l.persen7Hari) + '%"></i></div>' : 'Persen limit: tidak terbaca.') + '</div>';
+    return '<div class="tile"><h3><span class="sw" style="background:' + warnaAkun(nama, semuaAkun) + '"></span>' + esc(nama) + '</h3>' +
+      '<div class="big" title="' + fN.format(a.total) + '">' + n(a.total) + '</div><div class="sub" style="margin:0">token total</div>' +
+      '<dl class="kv"><dt>Baca cache</dt><dd>' + n(a.cr) + ' (' + pct(a.rasioCacheRead) + ')</dd><dt>Tulis cache</dt><dd>' + n(a.cw) + '</dd><dt>Output</dt><dd>' + n(a.out) + '</dd><dt>Input</dt><dd>' + n(a.inp) + '</dd>' +
+      '<dt>Panggilan API</dt><dd>' + fN.format(a.panggilan) + '</dd><dt>Konteks rata/panggilan</dt><dd>' + n(a.konteksRata) + '</dd><dt>Beban (berbobot)</dt><dd>' + n(a.beban) + '</dd></dl>' + limitHtml + '</div>';
+  }).join('') || '<p class="sub">Tidak ada data 7 hari terakhir.</p>';
+
+  // Grafik harian (30 hari terakhir), ditumpuk per akun.
+  const hari = Object.entries(u.perHari).slice(-30);
+  const urutAkun = semuaAkun.slice().sort((a, b) => (a === 'tak diketahui') - (b === 'tak diketahui') || a.localeCompare(b));
+  $('legend').innerHTML = urutAkun.map(a => '<span><i class="sw" style="background:' + warnaAkun(a, semuaAkun) + '"></i>' + esc(a) + '</span>').join('');
+  const maks = Math.max(1, ...hari.map(([, v]) => Object.values(v).reduce((s, a) => s + a.total, 0)));
+  const langkah = Math.pow(10, Math.floor(Math.log10(maks))); const atas = Math.ceil(maks / langkah) * langkah;
+  const ticks = [0, .25, .5, .75, 1].map(f => f * atas);
+  $('chart').innerHTML = '<div class="yax">' + ticks.map(t => '<span style="bottom:' + (t / atas * 100) + '%">' + n(t) + '</span>').join('') + '</div>' +
+    ticks.slice(1).map(t => '<div class="grid" style="bottom:' + (t / atas * 100) + '%"></div>').join('') +
+    hari.map(([h, v], i) => '<div class="col" data-i="' + i + '">' + urutAkun.filter(a => v[a]).map(a => '<i style="height:calc(' + (v[a].total / atas * 100) + '% - 2px);background:' + warnaAkun(a, semuaAkun) + '"></i>').join('') + '</div>').join('');
+  $('xax').innerHTML = hari.map(([h], i) => '<span>' + (i % Math.ceil(hari.length / 8) === 0 || i === hari.length - 1 ? h.slice(5) : '') + '</span>').join('');
+  $('chart').onmousemove = (e) => {
+    const c = e.target.closest('.col'); const tip = $('tip'); if (!c) { tip.style.display = 'none'; return; }
+    const [h, v] = hari[+c.dataset.i]; const tot = Object.values(v).reduce((s, a) => s + a.total, 0);
+    tip.innerHTML = '<b>' + h + '</b>' + urutAkun.filter(a => v[a]).map(a => '<div><span><i class="sw" style="background:' + warnaAkun(a, semuaAkun) + '"></i> ' + esc(a) + '</span><span>' + n(v[a].total) + '</span></div>').join('') + '<div><span>Total</span><span>' + n(tot) + '</span></div>';
+    tip.style.display = 'block'; tip.style.left = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8) + 'px'; tip.style.top = (e.clientY + 14) + 'px';
+  };
+  $('chart').onmouseleave = () => { $('tip').style.display = 'none'; };
+  $('tabHari').innerHTML = '<table><thead><tr><th class="l">Hari</th>' + urutAkun.map(a => '<th>' + esc(a) + '</th>').join('') + '<th>Total</th><th>Baca cache</th><th>Output</th></tr></thead><tbody>' +
+    Object.entries(u.perHari).reverse().map(([h, v]) => { const s = Object.values(v); return '<tr><td>' + h + '</td>' + urutAkun.map(a => '<td>' + (v[a] ? n(v[a].total) : '') + '</td>').join('') + '<td title="' + fN.format(s.reduce((x, a) => x + a.total, 0)) + '">' + n(s.reduce((x, a) => x + a.total, 0)) + '</td><td>' + n(s.reduce((x, a) => x + a.cr, 0)) + '</td><td>' + n(s.reduce((x, a) => x + a.out, 0)) + '</td></tr>'; }).join('') + '</tbody></table>';
+
+  // Per project.
+  $('subProj').textContent = u.catatan.project + ' ' + u.catatan.beban;
+  const src = modeProj === 'cwd' ? u.perProjectCwd : u.perProject;
+  $('tabProj').innerHTML = tabel(Object.entries(src).sort((a, b) => b[1].beban - a[1].beban), 'project', 'Project');
+
+  // Sesi termahal.
+  $('subSesi').textContent = 'Urut menurut beban berbobot. "Biaya CC" = biaya-setara terakhir yang dicatat Claude Code sendiri (cost-state), bukan tagihan; langganan Pro tidak ditagih per token. Dari ' + u.jumlahSesi + ' sesi.';
+  const medKonteks = u.sesiTermahal.map(s => s.konteksRata).sort((a, b) => a - b)[Math.floor(u.sesiTermahal.length / 2)] || 0;
+  $('tabSesi').innerHTML = '<table><thead><tr><th class="l">Sesi</th><th class="l">Judul</th><th class="l">Akun</th><th class="l">Project</th><th class="l">Rentang</th><th>Panggilan</th><th>Total</th><th>Baca cache</th><th>Rasio</th><th>Konteks/panggilan</th><th>Output</th><th>Beban</th><th>Biaya CC</th></tr></thead><tbody>' +
+    u.sesiTermahal.map(s => '<tr><td class="mono">' + esc(s.id.slice(0, 8)) + '</td><td class="l wrap">' + esc(s.judul || '-') + (s.entry === 'claude-desktop' ? ' <span class="chip">desktop</span>' : '') + '</td><td class="l">' + esc(s.akun) + '</td><td class="l">' + esc(s.project) + '</td><td class="l">' + tgl(s.t0) + ' – ' + tgl(s.t1) + '</td><td>' + fN.format(s.panggilan) + '</td><td>' + n(s.total) + '</td><td>' + n(s.cr) + '</td><td>' + pct(s.rasioCacheRead) + '</td><td class="' + (s.konteksRata > medKonteks * 1.15 ? 'hi' : '') + '">' + n(s.konteksRata) + '</td><td>' + n(s.out) + '</td><td>' + n(s.beban) + '</td><td>' + (s.biayaClaudeCode == null ? '-' : '$' + s.biayaClaudeCode.toLocaleString('id-ID')) + '</td></tr>').join('') + '</tbody></table>';
+
+  $('tabModel').innerHTML = tabel(Object.entries(u.perModel).sort((a, b) => b[1].beban - a[1].beban), 'model', 'Model');
+  $('tabLimit').innerHTML = u.kenaLimit.length ? '<table><thead><tr><th class="l">Waktu</th><th class="l">Akun</th><th class="l">Jenis</th><th class="l">Reset</th><th class="l">Sesi</th></tr></thead><tbody>' +
+    u.kenaLimit.map(h => '<tr><td class="l">' + tgl(h.t) + '</td><td class="l">' + esc(h.akun) + '</td><td class="l">' + esc(h.jenis) + '</td><td class="l">' + (h.resetsAt ? tgl(h.resetsAt * 1000) : '-') + '</td><td class="l mono">' + esc(h.sesi.slice(0, 8)) + '</td></tr>').join('') + '</tbody></table>' : '<p class="sub">Tidak ada.</p>';
+}
+
+async function muat() {
+  $('galat').textContent = ''; $('meta').textContent = 'memuat… (scan pertama bisa beberapa detik)';
+  try { U = await api('usage'); render(); } catch (e) { $('galat').textContent = 'Gagal memuat /api/usage: ' + e.message + (PIN ? '' : '\nBuka lewat link yang dicetak server (berisi ?pin=).'); $('meta').textContent = ''; }
+  try {
+    const p = await api('projects');
+    if (p.error) { $('tabDaftar').innerHTML = '<p class="err">' + esc(p.error) + '</p>'; return; }
+    const pakai = U ? U.perProject : {};
+    $('tabDaftar').innerHTML = '<table><thead><tr><th class="l">Project</th><th class="l">Fase</th><th class="l">Folder</th><th class="l">Link</th><th>Token (semua waktu)</th></tr></thead><tbody>' +
+      p.proyek.map(x => '<tr><td class="l">' + esc(x.nama) + '<div class="sub" style="margin:0;white-space:normal;max-width:320px">' + esc(x.ringkasan) + '</div></td><td class="l wrap">' + esc(x.fase) + '</td><td class="l">' + (x.folder ? '<span class="mono" title="' + esc(x.folder) + '">' + esc(x.folder.split(/[\\/]/).slice(-2).join('\\')) + '</span>' + (x.folderAda ? '' : ' <span class="chip">tidak ada</span>') : '<span class="chip">belum dicatat</span>') + '</td><td class="l links">' +
+        x.link.map(l => '<a href="' + esc(l) + '" target="_blank" rel="noopener">' + esc(l.replace(/^https:\/\//, '')) + '</a>').join('') + '</td><td>' + (pakai[x.nama] ? n(pakai[x.nama].total) : '') + '</td></tr>').join('') + '</tbody></table>';
+  } catch (e) { $('tabDaftar').innerHTML = '<p class="err">Gagal memuat /api/projects: ' + esc(e.message) + '</p>'; }
+}
+document.querySelectorAll('.tabs button').forEach(b => b.onclick = () => { modeProj = b.dataset.p; document.querySelectorAll('.tabs button').forEach(x => x.setAttribute('aria-pressed', x === b)); if (U) render(); });
+$('muat').onclick = muat;
+muat();
+</script>
+</body>
+</html>
