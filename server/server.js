@@ -55,6 +55,8 @@ const STATE_PATH = path.join(CFG.folderData, 'state.json');
 const DIVS = { backend: 'Backend', frontend: 'Frontend', design: 'Desain' };
 const NAMES = { backend: ['Bima', 'Sekar', 'Tegar', 'Nadia'], frontend: ['Dimas', 'Laras', 'Fajar', 'Citra'], design: ['Ayu', 'Gilang', 'Rani', 'Yoga'] };
 const uid = () => crypto.randomBytes(4).toString('hex');
+// Token baca-saja per workspace untuk /hasil/<token>/<path> (128 bit). Bukan PIN: tidak berlaku untuk /api.
+const tokenHasil = () => crypto.randomBytes(16).toString('hex');
 let S = { ws: [] };
 try { S = JSON.parse(fs.readFileSync(STATE_PATH, 'utf8')); } catch (e) {}
 // Proses yang terputus saat server mati dikembalikan ke antrean.
@@ -62,6 +64,7 @@ for (const w of S.ws) {
   for (const a of w.agents) { a.state = 'idle'; a.task = null; a.aktivitas = ''; }
   for (const t of w.tasks) if (t.status === 'kerja' || t.status === 'lapor') { t.status = 'antre'; t.agent = null; t.progress = 0; }
   if (w.status === 'planning' || w.status === 'final') w.status = w.tasks.length ? 'running' : 'idle';
+  if (!w.aksesHasil) w.aksesHasil = tokenHasil();
 }
 let saveTimer = null;
 function changed() {
@@ -75,11 +78,21 @@ function mkAgents() {
   return ag;
 }
 function slug(s) { return (s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'proyek').slice(0, 40); }
+// Folder baru selalu unik: nama yang sudah dipakai workspace lain, atau folder yang sudah ada dan tidak kosong
+// (mis. sisa workspace yang dihapus — Hapus sengaja tidak menghapus folder), dilewati → -2, -3, dst.
+// Folder lama tidak dihapus/dipindah. Rename workspace tidak memindahkan folder.
+const samaPath = (a, b) => { const r = x => path.resolve(x); return process.platform === 'win32' ? r(a).toLowerCase() === r(b).toLowerCase() : r(a) === r(b); };
+function folderTerpakai(dir) {
+  if (S.ws.some(w => w.folder && samaPath(w.folder, dir))) return true;
+  let st; try { st = fs.statSync(dir); } catch (e) { return false; } // belum ada
+  if (!st.isDirectory()) return true;
+  try { return fs.readdirSync(dir).length > 0; } catch (e) { return true; }
+}
 function newWs(nama) {
-  let dir = path.join(CFG.folderProyek, slug(nama)), n = 2;
-  while (fs.existsSync(dir) && S.ws.some(w => w.folder === dir)) dir = path.join(CFG.folderProyek, slug(nama) + '-' + n++);
+  const dasar = slug(nama); let dir = path.join(CFG.folderProyek, dasar), n = 2;
+  while (folderTerpakai(dir)) dir = path.join(CFG.folderProyek, dasar + '-' + n++);
   fs.mkdirSync(dir, { recursive: true });
-  const w = { id: uid(), nama, goal: '', status: 'idle', tasks: [], log: [], agents: mkAgents(), biaya: 0, token: 0, ringkasan: '', laporan: '', folder: dir, t0: Date.now() };
+  const w = { id: uid(), nama, goal: '', status: 'idle', tasks: [], log: [], agents: mkAgents(), biaya: 0, token: 0, ringkasan: '', laporan: '', folder: dir, aksesHasil: tokenHasil(), t0: Date.now() };
   S.ws.push(w); log(w, 'Sistem', 'Workspace dibuat. Folder proyek: ' + dir); return w;
 }
 function log(w, who, msg) {
@@ -205,9 +218,10 @@ const mt = (peran) => { const v = (CFG.maxTurns || {})[peran]; return v > 0 ? +v
 
 /* ---------------- Alur kerja ---------------- */
 // Perkiraan kasar biaya-setara (USD) untuk Usulan mode Tim, TANPA memanggil Claude.
-// Sumber: uji asli 20-11 (3 tugas nyata 121k token / $0,39; perkiraan token lama 360k terlalu tinggi).
+// Sumber: uji asli 20-11 (3 tugas nyata 121k token / $0,39; perkiraan token lama 360k terlalu tinggi);
+// uji Tim ulang 20-11 setelah manajer --tools Read,Glob,Grep: total $0,23, manajer ~$0,135 → manajer 0,15.
 // manajer = rencana + laporan akhir. Ubah angkanya di sini saja.
-const PERKIRAAN = { perTugasStaf: 0.04, manajer: 0.30 };
+const PERKIRAAN = { perTugasStaf: 0.04, manajer: 0.15 };
 const perkiraanUsd = (nTugas) => Math.round((nTugas * PERKIRAAN.perTugasStaf + PERKIRAAN.manajer) * 100) / 100;
 const SYS_MGR = 'Kamu Arya, kepala manajer proyek di Kantor Agen. Timmu: divisi backend, frontend, dan design. Jawab dalam bahasa Indonesia. Sapa pemilik proyek dengan "kamu", jangan "Bapak/Ibu".';
 // Mode Solo: satu sesi staf mengerjakan brief langsung, tanpa rencana dan tanpa laporan manajer.
@@ -250,8 +264,8 @@ async function work(w, a, t) {
   const r = await runClaude({ key: w.id + ':' + a.id, w, akun: a.akun, model: CFG.model.staf, alat: CFG.alatStaf, maxTurns: mt('staf'),
     system: t.solo
       ? 'Kamu ' + a.nama + ' di Kantor Agen. Kerjakan brief ini sendirian, langsung di folder proyek ini dengan membuat atau mengubah file. Kerjakan secukupnya sesuai brief, tanpa file panduan/draf tambahan. ' +
-        'Di akhir, tulis laporan singkat (maks 150 kata) dalam bahasa Indonesia kasual untuk pemilik proyek, sapa dengan "kamu": apa yang sudah jadi dan langkah berikutnya kalau ada. Sebut setiap file hasil dalam backtick, misalnya `catatan.md`.\n\nMemori:\n' + memori(a)
-      : 'Kamu ' + a.nama + ', anggota divisi ' + DIVS[a.div] + ' di Kantor Agen. Kerjakan tugasmu langsung di folder proyek ini dengan membuat atau mengubah file. Jangan mengerjakan tugas divisi lain. Di akhir, tulis ringkasan singkat (maks 120 kata) tentang apa yang kamu buat dan file mana saja.\n\nMemori:\n' + memori(a),
+        'Di akhir, tulis laporan singkat (maks 150 kata) dalam bahasa Indonesia kasual untuk pemilik proyek, sapa dengan "kamu": apa yang sudah jadi dan langkah berikutnya kalau ada. Sebut setiap file hasil dalam backtick, misalnya `catatan.md`. Hasil web dibuka pemilik proyek lewat link Lihat hasil di web Kantor Agen, jadi jangan menyuruh menjalankan npx atau server lokal; cukup sebut file yang dibuka.\n\nMemori:\n' + memori(a)
+      : 'Kamu ' + a.nama + ', anggota divisi ' + DIVS[a.div] + ' di Kantor Agen. Kerjakan tugasmu langsung di folder proyek ini dengan membuat atau mengubah file. Jangan mengerjakan tugas divisi lain. Di akhir, tulis ringkasan singkat (maks 120 kata) tentang apa yang kamu buat dan file mana saja. Hasil web dibuka pemilik proyek lewat link Lihat hasil di web Kantor Agen, jadi jangan menyuruh menjalankan npx atau server lokal; cukup sebut file yang dibuka.\n\nMemori:\n' + memori(a),
     prompt: t.solo
       ? 'Proyek: ' + w.nama + '\nBrief: ' + w.goal + (t.catatan ? '\n\nCatatan dari pemilik proyek: ' + t.catatan : '')
       : 'Proyek: ' + w.nama + '\nBrief: ' + w.goal + '\nRencana manajer: ' + w.ringkasan + '\n\nTugasmu: ' + t.title + '\n' + t.detail + (deps ? '\n\nHasil rekan yang terkait:\n' + deps : '') + (t.catatan ? '\n\nCatatan dari bos/manajer: ' + t.catatan : ''),
@@ -309,7 +323,7 @@ async function final(w) {
   log(w, 'Arya', 'Semua tugas masuk. Menyusun laporan akhir.');
   const r = await runClaude({ key: w.id + ':mgr', w, akun: 0, model: CFG.model.manajer, maxTurns: mt('manajer'), system: SYS_MGR,
     prompt: 'Brief: ' + w.goal + '\n\nHasil tim:\n' + w.tasks.map(t => '- [' + t.div + '] ' + t.title + ' (' + t.status + '): ' + (t.output || '').slice(0, 800) + (t.file.length ? ' File: ' + t.file.join(', ') : '')).join('\n') +
-      '\n\nTulis laporan akhir untuk pemilik proyek (maks 250 kata), sapa dengan "kamu": apa yang sudah jadi, file mana yang perlu dibuka (tulis nama file dalam backtick), dan langkah berikutnya. Boleh baca file di folder ini untuk mengecek.' });
+      '\n\nTulis laporan akhir untuk pemilik proyek (maks 250 kata), sapa dengan "kamu": apa yang sudah jadi, file mana yang perlu dibuka (tulis nama file dalam backtick), dan langkah berikutnya. Hasil web dibuka pemilik proyek lewat link Lihat hasil di web Kantor Agen, jadi jangan menyuruh menjalankan npx atau server lokal; cukup sebut file yang dibuka. Boleh baca file di folder ini untuk mengecek.' });
   m.state = 'idle'; m.aktivitas = '';
   if (r.batas) { jedaBiaya(w, 'final'); return; }
   if (w.status === 'dihentikan') return; // rem darurat saat menulis laporan; Lanjutkan akan memanggil final lagi
@@ -385,15 +399,25 @@ function daftarHasil(root, max = 2000) {
   jalan(root, '');
   return out.sort((a, b) => a.path.localeCompare(b.path));
 }
+// MIME harus benar: dengan nosniff, browser menolak CSS/JS yang disajikan sebagai text/plain.
 const TIPE = {
   '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
-  '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.json': 'text/plain; charset=utf-8',
-  '.js': 'text/plain; charset=utf-8', '.mjs': 'text/plain; charset=utf-8', '.css': 'text/plain; charset=utf-8',
+  '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.json': 'application/json; charset=utf-8',
+  '.js': 'text/javascript; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
   '.csv': 'text/plain; charset=utf-8', '.log': 'text/plain; charset=utf-8',
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
   '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.pdf': 'application/pdf',
+  '.woff2': 'font/woff2', '.woff': 'font/woff', '.ttf': 'font/ttf', '.otf': 'font/otf',
 };
-const HDR_HASIL = { 'content-security-policy': 'sandbox', 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' };
+// Dokumen hasil di-sandbox TANPA allow-same-origin: origin-nya opaque, jadi tidak bisa membaca localStorage (PIN)
+// web kantor. allow-scripts supaya JS halaman jalan. Karena origin opaque, fetch('menu.json') = permintaan
+// lintas-origin → respons /hasil ber-token memberi Access-Control-Allow-Origin: * (isinya memang publik bagi
+// pemegang token). Referrer dimatikan supaya token tidak bocor ke CDN/situs luar.
+const HDR_HASIL = {
+  'content-security-policy': 'sandbox allow-scripts allow-forms allow-popups allow-modals',
+  'x-content-type-options': 'nosniff', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer',
+  'access-control-allow-origin': '*',
+};
 function tolakHasil(res, code, msg) { res.writeHead(code, Object.assign({ 'content-type': 'text/plain; charset=utf-8' }, HDR_HASIL)); res.end(msg); }
 // Path relatif → path absolut di dalam folder workspace, atau null kalau keluar folder.
 function dalamFolder(folder, rel) {
@@ -405,10 +429,19 @@ function dalamFolder(folder, rel) {
   if (!rFull.startsWith(rRoot + path.sep)) return null; // symlink/junction keluar folder
   return rFull;
 }
-function sajikanHasil(req, res) {
+// /hasil/<token>/<path>: token baca-saja per workspace di path, jadi URL relatif (style.css, menu.json, gambar,
+// fetch) otomatis membawa token tanpa PIN/cookie. Format lama /hasil/<wsId>/<path>?pin= → redirect ke format token.
+function sajikanHasil(req, res, pinOk) {
   const m = req.url.split('?')[0].match(/^\/hasil\/([^/]+)\/(.+)$/);
   if (!m) return tolakHasil(res, 404, 'Tidak ada');
-  const w = S.ws.find(x => x.id === m[1]); if (!w || !w.folder) return tolakHasil(res, 404, 'Workspace tidak ditemukan');
+  let w = /^[0-9a-f]{32}$/.test(m[1]) && S.ws.find(x => x.aksesHasil === m[1]);
+  if (!w) {
+    const lama = S.ws.find(x => x.id === m[1]);
+    if (!lama) return tolakHasil(res, 404, 'Tidak ada');
+    if (!pinOk) return tolakHasil(res, 401, 'PIN salah');
+    res.writeHead(302, Object.assign({ location: '/hasil/' + lama.aksesHasil + '/' + m[2] }, HDR_HASIL)); return res.end();
+  }
+  if (!w.folder) return tolakHasil(res, 404, 'Tidak ada');
   let rel; try { rel = decodeURIComponent(m[2]); } catch (e) { return tolakHasil(res, 400, 'Path tidak valid'); }
   const full = dalamFolder(w.folder, rel);
   if (full === null) return tolakHasil(res, 403, 'Ditolak: path di luar folder workspace');
@@ -425,8 +458,15 @@ http.createServer(async (req, res) => {
     if (req.method === 'GET' && u.pathname === '/dashboard.html') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return fs.createReadStream(DASBOR).pipe(res); }
     const pinOk = (req.headers['x-pin'] || u.searchParams.get('pin')) === CFG.pin;
     // Dicek dari URL mentah: parser URL melipat "../" dan "%2e%2e" sebelum sampai sini.
-    if (/^\/hasil(\/|\?|$)/.test(req.url)) { if (req.method !== 'GET') return tolakHasil(res, 405, 'Pakai GET'); if (!pinOk) return tolakHasil(res, 401, 'PIN salah'); return sajikanHasil(req, res); }
+    if (/^\/hasil(\/|\?|$)/.test(req.url)) { if (req.method !== 'GET') return tolakHasil(res, 405, 'Pakai GET'); return sajikanHasil(req, res, pinOk); }
     if (p[0] !== 'api') { res.writeHead(404); return res.end('Tidak ada'); }
+    // API hanya dari halaman server sendiri (web kantor/dasbor = same-origin) atau URL yang diketik langsung.
+    // Halaman hasil (origin opaque → Origin: null, Sec-Fetch-Site: cross-site) dan situs lain ditolak, termasuk
+    // percobaan menebak PIN lewat fetch/img/form.
+    const asal = req.headers.origin, sfs = req.headers['sec-fetch-site'];
+    let asalAsing = false;
+    if (asal) { try { asalAsing = new URL(asal).host !== req.headers.host; } catch (e) { asalAsing = true; } } // termasuk 'null'
+    if (asalAsing || (sfs && sfs !== 'same-origin' && sfs !== 'none')) return send(res, 403, { error: 'Ditolak: permintaan API dari luar web Kantor Agen' });
     if (!pinOk) return send(res, 401, { error: 'PIN salah' });
     if (p[1] === 'state') return send(res, 200, JSON.parse(snapshot()));
     if (req.method === 'GET' && p[1] === 'usage') return send(res, 200, await usage.ringkasan(CFG));

@@ -631,7 +631,8 @@ function muatHasil(w,force){
     .finally(()=>{c.at=Date.now();c.p=null;dirty=true;}).then(()=>c);
   return c.p;
 }
-const hasilUrl=(w,p)=>'/hasil/'+encodeURIComponent(w.id)+'/'+p.split('/').map(encodeURIComponent).join('/')+'?pin='+encodeURIComponent(BR.pin);
+// Token baca-saja per workspace di path: aset relatif & fetch di halaman hasil ikut membawanya (tanpa PIN).
+const hasilUrl=(w,p)=>'/hasil/'+encodeURIComponent(w.aksesHasil||w.id)+'/'+p.split('/').map(encodeURIComponent).join('/')+(w.aksesHasil?'':'?pin='+encodeURIComponent(BR.pin));
 const ukuran=n=>n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB';
 function hasilHtml(w){
   muatHasil(w);const c=HASIL[w.id];
