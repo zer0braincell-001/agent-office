@@ -135,7 +135,16 @@ function bunuh(child) {
 const SELESAI_TUGAS = ['selesai', 'gagal', 'batas-langkah', 'dilewati'];
 
 const ALAT_MANAJER = 'Read,Glob,Grep';
-function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEvent, maxTurns = 0 }) {
+/* Diagnostik biaya (2a-2h): satu baris per sesi Claude di <folderData>/sesi.jsonl. Murni pencatatan, tidak dipakai
+   untuk perhitungan apa pun. Tanpa teks prompt/output. Gagal menulis = diam. */
+const SESI_LOG = path.join(CFG.folderData, 'sesi.jsonl');
+function jumlahStream(usagePesan, nEvent) {
+  const u = { input_tokens: 0, output_tokens: 0, cache_creation_input_tokens: 0, cache_read_input_tokens: 0 };
+  for (const x of usagePesan.values()) for (const k of Object.keys(u)) u[k] += +x[k] || 0;
+  return { pesanUnik: usagePesan.size, eventAssistant: nEvent, usage: u };
+}
+function catatSesi(baris) { try { fs.appendFile(SESI_LOG, JSON.stringify(baris) + '\n', () => {}); } catch (e) {} }
+function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEvent, maxTurns = 0, peran = '', tugas = null }) {
   // Gerbang batas biaya: dicek sebelum SETIAP panggilan baru. Pemanggil yang memutuskan jeda.
   if (lewatBatas(w)) return Promise.resolve({ text: '', session: resume || null, biaya: 0, token: 0, error: 'Batas biaya workspace tercapai', batas: true, rincian: rincianKosong() });
   return new Promise((resolve) => {
@@ -164,6 +173,8 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
     running.set(key, { child, akun });
     let buf = '', out = { text: '', session: resume || null, biaya: 0, token: 0, error: null, rincian: null, teksTerakhir: '' };
     const usagePesan = new Map(); // message.id -> usage; cadangan kalau sesi dihentikan sebelum ada pesan result
+    let nEventAssistant = 0, adaResult = false; const modelStream = new Set(); // diagnostik sesi.jsonl
+    const dasarSesi = () => ({ t: new Date().toISOString(), ws: w.id, tugas, peran, model });
     child.stdout.on('data', d => {
       buf += d; let i;
       while ((i = buf.indexOf('\n')) >= 0) {
@@ -179,7 +190,8 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
           log(w, (ag ? ag.nama : 'Sistem') + (ekstra === 'chat' ? ' (chat)' : ''), 'Alat tersedia (' + alatAda.length + '): ' + (alatAda.join(', ') || '-') + ' · MCP: ' + (mcp.length ? mcp.join(', ') : 'tidak ada'));
         }
         if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
-          if (ev.message.usage) usagePesan.set(ev.message.id || ('m' + usagePesan.size), ev.message.usage);
+          if (ev.message.usage) { usagePesan.set(ev.message.id || ('m' + usagePesan.size), ev.message.usage); nEventAssistant++; }
+          if (ev.message.model) modelStream.add(ev.message.model);
           for (const b of ev.message.content) {
             if (b.type === 'tool_use') onEvent && onEvent({ alat: b.name, file: b.input && (b.input.file_path || b.input.pattern || b.input.path) });
             if (b.type === 'text' && b.text) { out.teksTerakhir = b.text; onEvent && onEvent({ teks: b.text }); }
@@ -191,6 +203,10 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
           if (ev.session_id) out.session = ev.session_id;
           if (ev.subtype === 'error_max_turns') { out.maxTurns = true; out.error = 'Batas langkah (--max-turns ' + maxTurns + ') tercapai'; }
           else if (ev.is_error) out.error = out.text || ev.subtype || 'error';
+          adaResult = true;
+          catatSesi(Object.assign(dasarSesi(), { subtype: ev.subtype, is_error: ev.is_error, num_turns: ev.num_turns, duration_ms: ev.duration_ms,
+            session_id: ev.session_id || out.session, total_cost_usd: 'total_cost_usd' in ev ? ev.total_cost_usd : null, total_cost_usd_ada: 'total_cost_usd' in ev,
+            usage: 'usage' in ev ? ev.usage : null, modelUsage: ev.modelUsage, stream: Object.assign(jumlahStream(usagePesan, nEventAssistant), { model: [...modelStream] }) }));
         }
       }
     });
@@ -199,6 +215,8 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
     child.on('error', e => { out.error = 'Tidak bisa menjalankan "' + CFG.perintahClaude + '": ' + e.message; });
     child.on('close', code => {
       running.delete(key); fs.unlink(sysFile, () => {});
+      if (!adaResult) catatSesi(Object.assign(dasarSesi(), { subtype: 'tanpa-result', exitCode: code, session_id: out.session,
+        stream: Object.assign(jumlahStream(usagePesan, nEventAssistant), { model: [...modelStream] }) }));
       if (!out.error && code !== 0 && !out.text) out.error = (errBuf.trim().split('\n').pop() || ('keluar dengan kode ' + code));
       if (out.error && !out.maxTurns && /limit|quota|usage/i.test(out.error)) out.limit = true;
       if (!out.rincian) { // tanpa result (mis. dihentikan): pakai usage per pesan yang sudah terbaca; biaya tidak diketahui
@@ -234,7 +252,7 @@ function mulaiSolo(w) {
 async function plan(w) {
   const m = agentOf(w, 'mgr'); m.state = 'rencana'; m.aktivitas = 'menyusun rencana'; changed();
   const tim = Object.keys(DIVS).map(d => DIVS[d] + ': ' + w.agents.filter(a => a.div === d).length + ' orang').join(', ');
-  const r = await runClaude({ key: w.id + ':mgr', w, akun: 0, model: CFG.model.manajer, maxTurns: mt('manajer'), system: SYS_MGR + '\n\nMemori:\n' + memori(m),
+  const r = await runClaude({ key: w.id + ':mgr', w, akun: 0, model: CFG.model.manajer, maxTurns: mt('manajer'), peran: 'manajer-rencana', system: SYS_MGR + '\n\nMemori:\n' + memori(m),
     prompt: 'Brief dari bos: ' + w.goal + '\nNama proyek: ' + w.nama + '\nTim: ' + tim + '\nFolder kerja saat ini bisa kamu baca bila perlu.\n\n' +
       'Pecah brief menjadi 1 sampai 9 tugas konkret. Tiap tugas dikerjakan satu orang dan menghasilkan file di folder proyek. ' +
       'Aturan: jangan membuat tugas panduan, format, draf, atau review kecuali brief memintanya. Boleh hanya 1 tugas. ' +
@@ -261,7 +279,7 @@ async function work(w, a, t) {
   log(w, a.nama, (t.revisi ? 'Merevisi' : 'Mulai mengerjakan') + ' "' + t.title + '".');
   const deps = t.after.map(id => w.tasks.find(x => x.id === id)).filter(Boolean).map(x => '- ' + x.title + ' (oleh ' + ((agentOf(w, x.agent) || {}).nama || '-') + '): ' + (x.output || '').slice(0, 1500) + (x.file.length ? '\n  File: ' + x.file.join(', ') : '')).join('\n');
   let langkah = 0;
-  const r = await runClaude({ key: w.id + ':' + a.id, w, akun: a.akun, model: CFG.model.staf, alat: CFG.alatStaf, maxTurns: mt('staf'),
+  const r = await runClaude({ key: w.id + ':' + a.id, w, akun: a.akun, model: CFG.model.staf, alat: CFG.alatStaf, maxTurns: mt('staf'), peran: t.solo ? 'solo' : 'staf', tugas: t.id,
     system: t.solo
       ? 'Kamu ' + a.nama + ' di Kantor Agen. Kerjakan brief ini sendirian, langsung di folder proyek ini dengan membuat atau mengubah file. Kerjakan secukupnya sesuai brief, tanpa file panduan/draf tambahan. ' +
         'Di akhir, tulis laporan singkat (maks 150 kata) dalam bahasa Indonesia kasual untuk pemilik proyek, sapa dengan "kamu": apa yang sudah jadi dan langkah berikutnya kalau ada. Sebut setiap file hasil dalam backtick, misalnya `catatan.md`. Hasil web dibuka pemilik proyek lewat link Lihat hasil di web Kantor Agen, jadi jangan menyuruh menjalankan npx atau server lokal; cukup sebut file yang dibuka.\n\nMemori:\n' + memori(a)
@@ -321,7 +339,7 @@ async function final(w) {
   }
   w.status = 'final'; const m = agentOf(w, 'mgr'); m.state = 'rangkum'; m.aktivitas = 'menulis laporan';
   log(w, 'Arya', 'Semua tugas masuk. Menyusun laporan akhir.');
-  const r = await runClaude({ key: w.id + ':mgr', w, akun: 0, model: CFG.model.manajer, maxTurns: mt('manajer'), system: SYS_MGR,
+  const r = await runClaude({ key: w.id + ':mgr', w, akun: 0, model: CFG.model.manajer, maxTurns: mt('manajer'), peran: 'manajer-laporan', system: SYS_MGR,
     prompt: 'Brief: ' + w.goal + '\n\nHasil tim:\n' + w.tasks.map(t => '- [' + t.div + '] ' + t.title + ' (' + t.status + '): ' + (t.output || '').slice(0, 800) + (t.file.length ? ' File: ' + t.file.join(', ') : '')).join('\n') +
       '\n\nTulis laporan akhir untuk pemilik proyek (maks 250 kata), sapa dengan "kamu": apa yang sudah jadi, file mana yang perlu dibuka (tulis nama file dalam backtick), dan langkah berikutnya. Hasil web dibuka pemilik proyek lewat link Lihat hasil di web Kantor Agen, jadi jangan menyuruh menjalankan npx atau server lokal; cukup sebut file yang dibuka. Boleh baca file di folder ini untuk mengecek.' });
   m.state = 'idle'; m.aktivitas = '';
@@ -341,7 +359,7 @@ async function chat(w, a, pesan) {
     a.chat.push({ dari: a.nama, teks: 'Aku sedang mengerjakan tugas. Pesanmu kucatat untuk tugas ini/berikutnya.', t: Date.now() }); changed(); return;
   }
   const prevState = a.state; a.state = a.div === 'manager' ? 'review' : 'kerja'; a.aktivitas = 'membalas chat'; changed();
-  const r = await runClaude({ key, w, akun: a.akun, model: a.div === 'manager' ? CFG.model.manajer : CFG.model.staf, resume: a.session,
+  const r = await runClaude({ key, w, akun: a.akun, model: a.div === 'manager' ? CFG.model.manajer : CFG.model.staf, resume: a.session, peran: 'chat',
     alat: a.div === 'manager' ? null : CFG.alatStaf,
     system: (a.div === 'manager' ? SYS_MGR : 'Kamu ' + a.nama + ', anggota divisi ' + DIVS[a.div] + ' di Kantor Agen.') + ' Bos sedang mengobrol langsung denganmu. Jawab singkat.\n\nMemori:\n' + memori(a),
     prompt: 'Status proyek: ' + w.status + '. Tugas: ' + w.tasks.map(t => t.title + ' [' + t.status + ']').join('; ') + '\n\nPesan bos: ' + pesan });
