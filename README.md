@@ -31,7 +31,8 @@ Syarat: Node.js 18+ (`node -v`) dan Claude Code yang sudah login (`claude` lalu 
 | `akun` | daftar login Claude Code. `configDir` kosong = login default. Akun kedua: isi folder lain, lalu login sekali dengan `set CLAUDE_CONFIG_DIR=C:\Users\<kamu>\.claude-b` + `claude`. |
 | `maxAgenPerAkun` | berapa agen boleh jalan bersamaan per akun (default 2) |
 | `model` | `manajer` dan `staf` (alias Claude Code: `opus`, `sonnet`, `haiku`) |
-| `batasBiaya` | 0 = tanpa batas; selain itu workspace dijeda saat biaya-setara mencapai angka ini |
+| `batasBiaya` | batas biaya-setara (USD) bawaan tiap workspace; 0 = tanpa batas. Tiap workspace bisa punya batas sendiri (isi saat brief atau di Setelan). Dicek sebelum tiap panggilan Claude baru; kalau tercapai workspace dijeda sampai batas dinaikkan |
+| `maxTurns` | batas langkah per sesi Claude (`--max-turns`): `staf` (juga Solo, default 25) dan `manajer` (default 10). 0 = tidak dikirim. Flag ini tidak tercantum di `claude --help` tapi diterima CLI (dicek di 2.1.329) |
 | `pin` | PIN akses web; ganti kalau bocor |
 | `vault` | folder vault Obsidian (berisi `INDEX.md` + `repos.md`) untuk daftar project di dasbor |
 | `usage.folderLog` | folder log Claude Code (`...\.claude\projects`). Kosong = login default + `configDir` tiap akun |

@@ -29,7 +29,10 @@ const DEFAULT_CONFIG = {
   // Alat yang boleh dipakai staf. Bash sengaja belum diizinkan di tahap 1.
   alatStaf: ['Read', 'Edit', 'Write', 'Glob', 'Grep'],
   // Batas biaya-setara per workspace (USD, dari laporan Claude Code). 0 = tanpa batas.
+  // Tiap workspace bisa punya batas sendiri; kosong = pakai angka ini.
   batasBiaya: 0,
+  // Batas langkah (--max-turns) per sesi Claude. 0 = tidak dikirim. Solo memakai angka staf.
+  maxTurns: { staf: 25, manajer: 10 },
   // Perintah Claude Code. Ganti kalau `claude` tidak ada di PATH.
   perintahClaude: 'claude',
   // PIN akses. Wajib dikirim oleh web (otomatis lewat link yang dicetak saat server jalan).
@@ -95,11 +98,34 @@ const running = new Map(); // key -> child process
 const akunAktif = () => { const m = new Array(CFG.akun.length).fill(0); for (const r of running.values()) m[r.akun]++; return m; };
 function q(s) { return process.platform === 'win32' ? '"' + String(s).replace(/"/g, '\\"') + '"' : s; }
 
-function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEvent }) {
+/* Rincian token: input, output, tulis cache, baca cache, biaya-setara (USD). */
+const rincianKosong = () => ({ inp: 0, out: 0, cw: 0, cr: 0, usd: 0, sesi: 0 });
+function tambahRincian(a, r) { for (const k of ['inp', 'out', 'cw', 'cr', 'usd', 'sesi']) a[k] = (a[k] || 0) + (r[k] || 0); if (r.sebagian) a.sebagian = true; return a; }
+const dariUsage = (u, usd) => ({ inp: u.input_tokens || 0, out: u.output_tokens || 0, cw: u.cache_creation_input_tokens || 0, cr: u.cache_read_input_tokens || 0, usd: usd || 0, sesi: 1 });
+/* Batas biaya: per workspace (w.batas) atau global (CFG.batasBiaya). 0/kosong = tanpa batas. */
+function batasEfektif(w) { const b = w.batas != null && w.batas !== '' ? +w.batas : +CFG.batasBiaya; return b > 0 ? b : 0; }
+function lewatBatas(w) { const b = batasEfektif(w); return b > 0 && (w.biaya || 0) >= b; }
+function jedaBiaya(w, dari) {
+  if (w.status === 'jeda-biaya') return;
+  w.status = 'jeda-biaya'; w.jedaDari = dari;
+  log(w, 'Sistem', 'Dijeda: batas biaya tercapai ($' + (w.biaya || 0).toFixed(2) + ' dari $' + batasEfektif(w).toFixed(2) + '). Naikkan batas untuk melanjutkan.');
+}
+/* Rem darurat: matikan seluruh pohon proses (di Windows `claude` jalan lewat cmd.exe karena shell:true). */
+function bunuh(child) {
+  if (!child || child.exitCode !== null) return;
+  if (process.platform === 'win32') { try { spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).on('error', () => {}); } catch (e) {} }
+  else { try { child.kill('SIGTERM'); } catch (e) {} }
+}
+const SELESAI_TUGAS = ['selesai', 'gagal', 'dihentikan', 'batas-langkah']; // status akhir tugas
+
+function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEvent, maxTurns = 0 }) {
+  // Gerbang batas biaya: dicek sebelum SETIAP panggilan baru. Pemanggil yang memutuskan jeda.
+  if (lewatBatas(w)) return Promise.resolve({ text: '', session: resume || null, biaya: 0, token: 0, error: 'Batas biaya workspace tercapai', batas: true, rincian: rincianKosong() });
   return new Promise((resolve) => {
     const sysFile = path.join(os.tmpdir(), 'kantor-sys-' + uid() + '.txt');
     fs.writeFileSync(sysFile, system || '');
     const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', model, '--append-system-prompt-file', sysFile];
+    if (maxTurns > 0) args.push('--max-turns', String(maxTurns));
     if (alat && alat.length) { args.push('--permission-mode', 'acceptEdits', '--allowedTools', ...alat); }
     else args.push('--disallowedTools', 'Edit', 'Write', 'Bash', 'NotebookEdit');
     if (resume) args.push('--resume', resume);
@@ -109,7 +135,8 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
     const win = process.platform === 'win32';
     const child = spawn(win ? CFG.perintahClaude : CFG.perintahClaude, win ? args.map(q) : args, { cwd: w.folder, env, shell: win, windowsHide: true });
     running.set(key, { child, akun });
-    let buf = '', out = { text: '', session: resume || null, biaya: 0, token: 0, error: null };
+    let buf = '', out = { text: '', session: resume || null, biaya: 0, token: 0, error: null, rincian: null, teksTerakhir: '' };
+    const usagePesan = new Map(); // message.id -> usage; cadangan kalau sesi dihentikan sebelum ada pesan result
     child.stdout.on('data', d => {
       buf += d; let i;
       while ((i = buf.indexOf('\n')) >= 0) {
@@ -117,16 +144,18 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
         let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
         if (ev.type === 'system' && ev.session_id) out.session = ev.session_id;
         if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
+          if (ev.message.usage) usagePesan.set(ev.message.id || ('m' + usagePesan.size), ev.message.usage);
           for (const b of ev.message.content) {
             if (b.type === 'tool_use') onEvent && onEvent({ alat: b.name, file: b.input && (b.input.file_path || b.input.pattern || b.input.path) });
-            if (b.type === 'text' && b.text) onEvent && onEvent({ teks: b.text });
+            if (b.type === 'text' && b.text) { out.teksTerakhir = b.text; onEvent && onEvent({ teks: b.text }); }
           }
         }
         if (ev.type === 'result') {
           out.text = ev.result || ''; out.biaya = ev.total_cost_usd || 0;
-          const u = ev.usage || {}; out.token = (u.input_tokens || 0) + (u.output_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0);
+          out.rincian = dariUsage(ev.usage || {}, out.biaya);
           if (ev.session_id) out.session = ev.session_id;
-          if (ev.is_error) out.error = out.text || ev.subtype || 'error';
+          if (ev.subtype === 'error_max_turns') { out.maxTurns = true; out.error = 'Batas langkah (--max-turns ' + maxTurns + ') tercapai'; }
+          else if (ev.is_error) out.error = out.text || ev.subtype || 'error';
         }
       }
     });
@@ -136,14 +165,21 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
     child.on('close', code => {
       running.delete(key); fs.unlink(sysFile, () => {});
       if (!out.error && code !== 0 && !out.text) out.error = (errBuf.trim().split('\n').pop() || ('keluar dengan kode ' + code));
-      if (out.error && /limit|quota|usage/i.test(out.error)) out.limit = true;
-      w.biaya += out.biaya; w.token += out.token;
+      if (out.error && !out.maxTurns && /limit|quota|usage/i.test(out.error)) out.limit = true;
+      if (!out.rincian) { // tanpa result (mis. dihentikan): pakai usage per pesan yang sudah terbaca; biaya tidak diketahui
+        out.rincian = rincianKosong(); out.rincian.sesi = 1; out.rincian.sebagian = true;
+        for (const u of usagePesan.values()) tambahRincian(out.rincian, Object.assign(dariUsage(u, 0), { sesi: 0 }));
+      }
+      const r = out.rincian; out.token = r.inp + r.out + r.cw + r.cr;
+      w.biaya = (w.biaya || 0) + out.biaya; w.token = (w.token || 0) + out.token;
+      w.rincian = tambahRincian(w.rincian || rincianKosong(), r);
       resolve(out);
     });
     child.stdin.end(prompt);
   });
 }
-function stopAll(w) { for (const [k, r] of running) if (k.startsWith(w.id + ':')) { try { r.child.kill(); } catch (e) {} } }
+function stopAll(w) { for (const [k, r] of running) if (k.startsWith(w.id + ':')) bunuh(r.child); }
+const mt = (peran) => { const v = (CFG.maxTurns || {})[peran]; return v > 0 ? +v : 0; };
 
 /* ---------------- Alur kerja ---------------- */
 // Perkiraan kasar token untuk Usulan mode Tim, TANPA memanggil Claude.
@@ -162,7 +198,7 @@ function mulaiSolo(w) {
 async function plan(w) {
   const m = agentOf(w, 'mgr'); m.state = 'rencana'; m.aktivitas = 'menyusun rencana'; changed();
   const tim = Object.keys(DIVS).map(d => DIVS[d] + ': ' + w.agents.filter(a => a.div === d).length + ' orang').join(', ');
-  const r = await runClaude({ key: w.id + ':mgr', w, akun: 0, model: CFG.model.manajer, system: SYS_MGR + '\n\nMemori:\n' + memori(m),
+  const r = await runClaude({ key: w.id + ':mgr', w, akun: 0, model: CFG.model.manajer, maxTurns: mt('manajer'), system: SYS_MGR + '\n\nMemori:\n' + memori(m),
     prompt: 'Brief dari bos: ' + w.goal + '\nNama proyek: ' + w.nama + '\nTim: ' + tim + '\nFolder kerja saat ini bisa kamu baca bila perlu.\n\n' +
       'Pecah brief menjadi 1 sampai 9 tugas konkret. Tiap tugas dikerjakan satu orang dan menghasilkan file di folder proyek. ' +
       'Aturan: jangan membuat tugas panduan, format, draf, atau review kecuali brief memintanya. Boleh hanya 1 tugas. ' +
@@ -170,6 +206,8 @@ async function plan(w) {
       'Balas HANYA dengan JSON valid tanpa teks lain, berbentuk: {"ringkasan":"...","tugas":[{"divisi":"backend|frontend|design","judul":"...","detail":"...","setelah":[indeks tugas lain yang harus selesai dulu]}]}',
     onEvent: ev => { if (ev.alat) { m.aktivitas = 'membaca ' + path.basename(String(ev.file || '')); changed(); } } });
   m.state = 'idle'; m.aktivitas = '';
+  if (r.batas) { jedaBiaya(w, 'plan'); return; }
+  if (w.status === 'dihentikan') return; // dihentikan lewat rem darurat saat menyusun rencana
   if (r.error) { w.status = 'idle'; log(w, 'Sistem', 'Manajer gagal menyusun rencana: ' + r.error); return; }
   let j; try { j = JSON.parse(r.text.slice(r.text.indexOf('{'), r.text.lastIndexOf('}') + 1)); } catch (e) { w.status = 'idle'; log(w, 'Sistem', 'Rencana manajer bukan JSON yang valid. Coba kirim brief lagi.'); return; }
   const ids = j.tugas.map(() => uid());
@@ -180,13 +218,14 @@ async function plan(w) {
   w.status = 'usulan';
   log(w, 'Arya', 'Usulan siap: ' + w.tasks.length + ' tugas, perkiraan kasar ±' + Math.round(w.usulan.perkiraanToken / 1000) + 'k token. Tekan Jalankan untuk mulai. ' + w.ringkasan);
 }
-function depsOk(w, t) { return t.after.every(id => { const x = w.tasks.find(y => y.id === id); return !x || x.status === 'selesai' || x.status === 'gagal'; }); }
+function depsOk(w, t) { return t.after.every(id => { const x = w.tasks.find(y => y.id === id); return !x || SELESAI_TUGAS.includes(x.status); }); }
 async function work(w, a, t) {
+  if (lewatBatas(w)) { jedaBiaya(w, 'jadwal'); return; }
   t.status = 'kerja'; t.agent = a.id; t.progress = 0.03; a.state = 'kerja'; a.task = t.id; a.aktivitas = 'membaca tugas';
   log(w, a.nama, (t.revisi ? 'Merevisi' : 'Mulai mengerjakan') + ' "' + t.title + '".');
   const deps = t.after.map(id => w.tasks.find(x => x.id === id)).filter(Boolean).map(x => '- ' + x.title + ' (oleh ' + ((agentOf(w, x.agent) || {}).nama || '-') + '): ' + (x.output || '').slice(0, 1500) + (x.file.length ? '\n  File: ' + x.file.join(', ') : '')).join('\n');
   let langkah = 0;
-  const r = await runClaude({ key: w.id + ':' + a.id, w, akun: a.akun, model: CFG.model.staf, alat: CFG.alatStaf,
+  const r = await runClaude({ key: w.id + ':' + a.id, w, akun: a.akun, model: CFG.model.staf, alat: CFG.alatStaf, maxTurns: mt('staf'),
     system: t.solo
       ? 'Kamu ' + a.nama + ' di Kantor Agen. Kerjakan brief ini sendirian, langsung di folder proyek ini dengan membuat atau mengubah file. Kerjakan secukupnya sesuai brief, tanpa file panduan/draf tambahan. ' +
         'Di akhir, tulis laporan singkat (maks 150 kata) dalam bahasa Indonesia kasual untuk pemilik proyek, sapa dengan "kamu": apa yang sudah jadi dan langkah berikutnya kalau ada. Sebut setiap file hasil dalam backtick, misalnya `catatan.md`.\n\nMemori:\n' + memori(a)
@@ -202,6 +241,16 @@ async function work(w, a, t) {
         changed(); }
     } });
   if (r.session) a.session = r.session;
+  if (r.batas) { t.status = 'antre'; t.progress = 0; t.agent = null; a.state = 'idle'; a.task = null; a.aktivitas = ''; jedaBiaya(w, 'jadwal'); return; }
+  t.rincian = tambahRincian(t.rincian || rincianKosong(), r.rincian);
+  const lepas = () => { a.state = 'idle'; a.task = null; a.aktivitas = ''; changed(); };
+  if (t.status === 'dihentikan') { // rem darurat: proses sudah dibunuh, simpan apa yang sempat terbaca
+    t.output = r.text || r.teksTerakhir || t.output || ''; lepas(); log(w, a.nama, 'Dihentikan saat mengerjakan "' + t.title + '".'); return;
+  }
+  if (r.maxTurns) {
+    t.status = 'batas-langkah'; t.output = r.text || r.teksTerakhir || ''; t.progress = 1; lepas();
+    log(w, a.nama, 'Berhenti: batas langkah (' + mt('staf') + ') tercapai di "' + t.title + '".'); return;
+  }
   if (r.error) {
     t.coba++; t.progress = 0; t.agent = null; a.state = 'idle'; a.task = null; a.aktivitas = '';
     t.status = (r.limit || t.coba >= 2) ? 'gagal' : 'antre';
@@ -226,16 +275,22 @@ async function work(w, a, t) {
 async function final(w) {
   if (w.mode === 'solo') { // Solo: laporan = output agen itu sendiri, tanpa memanggil manajer.
     const t = w.tasks[0] || {};
-    w.laporan = t.status === 'selesai' ? (t.output || '(agen tidak menulis laporan)') : 'Tugas Solo gagal. Lihat Aktivitas untuk pesan error, lalu tekan Coba lagi di tugasnya.';
+    w.laporan = t.status === 'selesai' ? (t.output || '(agen tidak menulis laporan)')
+      : t.status === 'dihentikan' ? 'Tugas Solo dihentikan. Tekan Coba lagi di tugasnya untuk mengulang.' + (t.output ? '\n\nOutput terakhir:\n' + t.output : '')
+      : t.status === 'batas-langkah' ? 'Berhenti: batas langkah tercapai. Tekan Coba lagi di tugasnya untuk mengulang.' + (t.output ? '\n\nOutput terakhir:\n' + t.output : '')
+      : 'Tugas Solo gagal. Lihat Aktivitas untuk pesan error, lalu tekan Coba lagi di tugasnya.';
     w.status = 'done'; log(w, 'Sistem', 'Solo selesai. Laporan akhir siap dibaca.'); return;
   }
   w.status = 'final'; const m = agentOf(w, 'mgr'); m.state = 'rangkum'; m.aktivitas = 'menulis laporan';
   log(w, 'Arya', 'Semua tugas masuk. Menyusun laporan akhir.');
-  const r = await runClaude({ key: w.id + ':mgr', w, akun: 0, model: CFG.model.manajer, system: SYS_MGR,
+  const r = await runClaude({ key: w.id + ':mgr', w, akun: 0, model: CFG.model.manajer, maxTurns: mt('manajer'), system: SYS_MGR,
     prompt: 'Brief: ' + w.goal + '\n\nHasil tim:\n' + w.tasks.map(t => '- [' + t.div + '] ' + t.title + ' (' + t.status + '): ' + (t.output || '').slice(0, 800) + (t.file.length ? ' File: ' + t.file.join(', ') : '')).join('\n') +
       '\n\nTulis laporan akhir untuk pemilik proyek (maks 250 kata), sapa dengan "kamu": apa yang sudah jadi, file mana yang perlu dibuka (tulis nama file dalam backtick), dan langkah berikutnya. Boleh baca file di folder ini untuk mengecek.' });
+  m.state = 'idle'; m.aktivitas = '';
+  if (r.batas) { jedaBiaya(w, 'final'); return; }
+  if (w.status === 'dihentikan') return; // rem darurat saat menulis laporan; Lanjutkan akan memanggil final lagi
   w.laporan = r.error ? 'Laporan akhir gagal dibuat: ' + r.error : r.text;
-  m.state = 'idle'; m.aktivitas = ''; w.status = 'done';
+  w.status = 'done';
   log(w, 'Arya', 'Proyek selesai. Laporan akhir siap dibaca.');
 }
 async function chat(w, a, pesan) {
@@ -261,7 +316,9 @@ async function chat(w, a, pesan) {
 setInterval(() => {
   for (const w of S.ws) {
     if (w.status !== 'running') continue;
-    if (CFG.batasBiaya > 0 && w.biaya >= CFG.batasBiaya) { w.status = 'idle'; log(w, 'Sistem', 'Batas biaya workspace tercapai ($' + CFG.batasBiaya + '). Dijeda.'); continue; }
+    const semuaSelesai = w.tasks.length && w.tasks.every(t => SELESAI_TUGAS.includes(t.status)) && !w.agents.some(a => a.state === 'lapor' || a.state === 'kerja');
+    if (semuaSelesai && w.mode === 'solo') { final(w); continue; } // laporan Solo tidak memanggil Claude
+    if (lewatBatas(w)) { jedaBiaya(w, 'jadwal'); continue; } // sesi yang sedang jalan dibiarkan selesai
     const aktif = akunAktif();
     for (const a of w.agents) {
       if (a.div === 'manager' || a.state !== 'idle') continue;
@@ -269,14 +326,14 @@ setInterval(() => {
       const t = w.tasks.find(t => t.status === 'antre' && t.div === a.div && (!t.pinAgent || t.pinAgent === a.id) && depsOk(w, t));
       if (t) { aktif[a.akun]++; work(w, a, t); }
     }
-    if (w.tasks.length && w.tasks.every(t => t.status === 'selesai' || t.status === 'gagal') && !w.agents.some(a => a.state === 'lapor' || a.state === 'kerja')) final(w);
+    if (semuaSelesai) final(w);
   }
 }, 1000);
 
 /* ---------------- HTTP ---------------- */
 const clients = new Set();
 let bcTimer = null;
-function snapshot() { return JSON.stringify({ ws: S.ws, info: { akun: CFG.akun.map(a => a.nama), aktif: akunAktif(), maxAgenPerAkun: CFG.maxAgenPerAkun, model: CFG.model, folderData: CFG.folderData, folderProyek: CFG.folderProyek, batasBiaya: CFG.batasBiaya } }); }
+function snapshot() { return JSON.stringify({ ws: S.ws, info: { akun: CFG.akun.map(a => a.nama), aktif: akunAktif(), maxAgenPerAkun: CFG.maxAgenPerAkun, model: CFG.model, folderData: CFG.folderData, folderProyek: CFG.folderProyek, batasBiaya: CFG.batasBiaya, maxTurns: CFG.maxTurns } }); }
 function broadcast() { if (bcTimer) return; bcTimer = setTimeout(() => { bcTimer = null; const s = 'data: ' + snapshot() + '\n\n'; for (const c of clients) c.write(s); }, 250); }
 function body(req) { return new Promise(r => { let b = ''; req.on('data', d => { b += d; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch (e) { r({}); } }); }); }
 function send(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); }
@@ -367,6 +424,7 @@ http.createServer(async (req, res) => {
       if (w.status === 'planning' || w.status === 'running' || w.status === 'final') return send(res, 409, { error: 'Proyek masih berjalan' });
       w.goal = String(b.goal || '').slice(0, 2000); w.tasks = []; w.laporan = ''; w.ringkasan = ''; w.usulan = null;
       w.mode = b.mode === 'tim' ? 'tim' : 'solo'; // default Solo
+      if (b.batas != null && b.batas !== '') { const n = +b.batas; if (Number.isFinite(n) && n >= 0) w.batas = n; } // kosong = batas lama/config tetap
       if (w.mode === 'solo') { mulaiSolo(w); return send(res, 200, { ok: true, mode: w.mode }); }
       w.status = 'planning';
       log(w, 'Arya', 'Menerima brief (mode Tim): "' + w.goal + '". Menyusun usulan rencana.'); plan(w).then(changed); return send(res, 200, { ok: true, mode: w.mode });
@@ -379,11 +437,43 @@ http.createServer(async (req, res) => {
       if (w.status !== 'usulan') return send(res, 409, { error: 'Tidak ada usulan yang menunggu' });
       w.status = 'batal'; log(w, 'Sistem', 'Usulan dibatalkan. Tidak ada staf yang dijalankan. Kirim brief baru kapan saja.'); return send(res, 200, { ok: true });
     }
-    if (act === 'stop') { w.status = 'idle'; stopAll(w); for (const a of w.agents) { a.state = 'idle'; a.task = null; a.aktivitas = ''; } for (const t of w.tasks) if (t.status === 'kerja' || t.status === 'lapor') { t.status = 'antre'; t.agent = null; t.progress = 0; } log(w, 'Sistem', 'Proyek dihentikan.'); return send(res, 200, { ok: true }); }
-    if (act === 'lanjut') { if (w.tasks.length && w.status === 'idle') { w.status = 'running'; log(w, 'Sistem', 'Proyek dilanjutkan.'); } return send(res, 200, { ok: true }); }
+    // Rem darurat workspace: bunuh semua sesi (seluruh pohon proses), tugas yang sedang jalan = "dihentikan".
+    if (act === 'stop') {
+      if (!['planning', 'running', 'final', 'jeda-biaya'].includes(w.status)) return send(res, 409, { error: 'Workspace tidak sedang berjalan' });
+      for (const t of w.tasks) if (t.status === 'kerja') t.status = 'dihentikan';
+      w.status = 'dihentikan'; stopAll(w);
+      for (const a of w.agents) if (a.div === 'manager') { a.state = 'idle'; a.aktivitas = ''; }
+      log(w, 'Sistem', 'Workspace dihentikan (rem darurat). Tidak ada tugas baru yang dijadwalkan sampai kamu menekan Lanjutkan.'); return send(res, 200, { ok: true });
+    }
+    // Rem darurat per tugas: hanya tugas itu yang dibunuh; workspace ikut berhenti menjadwalkan.
+    if (act === 'stop-tugas') {
+      const t = w.tasks.find(x => x.id === b.task); if (!t || t.status !== 'kerja') return send(res, 409, { error: 'Tugas tidak sedang berjalan' });
+      t.status = 'dihentikan'; const r = running.get(w.id + ':' + t.agent); if (r) bunuh(r.child);
+      if (w.status === 'running') w.status = 'dihentikan';
+      log(w, 'Sistem', 'Tugas "' + t.title + '" dihentikan (rem darurat). Tekan Lanjutkan untuk meneruskan antrean.'); return send(res, 200, { ok: true });
+    }
+    if (act === 'lanjut') {
+      if (w.status !== 'idle' && w.status !== 'dihentikan') return send(res, 409, { error: 'Workspace tidak sedang berhenti' });
+      if (w.mode === 'tim' && !w.tasks.length && w.goal) { w.status = 'planning'; log(w, 'Sistem', 'Dilanjutkan: manajer menyusun ulang usulan.'); plan(w).then(changed); }
+      else if (w.tasks.length) { w.status = 'running'; log(w, 'Sistem', 'Proyek dilanjutkan.'); }
+      return send(res, 200, { ok: true });
+    }
+    // Batas biaya per workspace. lanjut=true dari tombol "Naikkan batas & lanjut" (ACC).
+    if (act === 'batas') {
+      let n = null; if (b.batas != null && b.batas !== '') { n = +b.batas; if (!Number.isFinite(n) || n < 0) return send(res, 400, { error: 'Batas harus angka ≥ 0 (USD)' }); }
+      const lama = w.batas; w.batas = n;
+      if (b.lanjut) {
+        if (w.status !== 'jeda-biaya') { changed(); return send(res, 200, { ok: true }); }
+        if (lewatBatas(w)) { const baru = batasEfektif(w); w.batas = lama; return send(res, 400, { error: 'Batas baru ($' + baru.toFixed(2) + ') belum melebihi terpakai ($' + (w.biaya || 0).toFixed(2) + ')' }); }
+        const dari = w.jedaDari; w.jedaDari = null;
+        if (dari === 'plan') { w.status = 'planning'; plan(w).then(changed); } else w.status = 'running';
+        log(w, 'Sistem', 'Batas dinaikkan ke ' + (batasEfektif(w) ? '$' + batasEfektif(w).toFixed(2) : 'tanpa batas') + '. Dilanjutkan.');
+      } else { log(w, 'Sistem', 'Batas biaya workspace: ' + (n == null ? 'ikut config' : n ? '$' + n.toFixed(2) : 'tanpa batas') + '.'); }
+      return send(res, 200, { ok: true });
+    }
     if (act === 'rename') { w.nama = String(b.nama || w.nama).slice(0, 60); changed(); return send(res, 200, { ok: true }); }
     if (act === 'hapus') { stopAll(w); S.ws = S.ws.filter(x => x !== w); changed(); return send(res, 200, { ok: true, catatan: 'Folder proyek tidak ikut dihapus.' }); }
-    if (act === 'retry') { const t = w.tasks.find(x => x.id === b.task); if (t) { t.status = 'antre'; t.coba = 0; t.agent = null; if (w.status === 'done' || w.status === 'idle') w.status = 'running'; changed(); } return send(res, 200, { ok: true }); }
+    if (act === 'retry') { const t = w.tasks.find(x => x.id === b.task); if (t) { t.status = 'antre'; t.coba = 0; t.agent = null; if (w.status === 'done' || w.status === 'idle' || w.status === 'dihentikan') w.status = 'running'; changed(); } return send(res, 200, { ok: true }); }
     if (act === 'agen') {
       if (w.status === 'running' || w.status === 'planning') return send(res, 409, { error: 'Tunggu proyek selesai atau hentikan dulu' });
       const div = b.div; const list = w.agents.filter(a => a.div === div); if (!DIVS[div]) return send(res, 400, { error: 'Divisi tidak dikenal' });
@@ -414,4 +504,4 @@ http.createServer(async (req, res) => {
   console.error('    taskkill /PID <pid> /F   (pid = angka di kolom terakhir)\n');
   process.exit(1);
 });
-process.on('SIGINT', () => { for (const r of running.values()) try { r.child.kill(); } catch (e) {} fs.writeFileSync(STATE_PATH, JSON.stringify(S, null, 1)); process.exit(0); });
+process.on('SIGINT', () => { for (const r of running.values()) if (r.child.exitCode === null) { try { if (process.platform === 'win32') require('child_process').spawnSync('taskkill', ['/PID', String(r.child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); else r.child.kill(); } catch (e) {} } fs.writeFileSync(STATE_PATH, JSON.stringify(S, null, 1)); process.exit(0); });
