@@ -657,7 +657,9 @@ function linkify(w,text){
 }
 function toast(msg,bad){const t=$('toast');t.textContent=msg;t.style.color=bad?'var(--bad)':'';t.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>t.hidden=true,bad?6000:2600);}
 const STATUS_LBL={idle:['Belum mulai',''],planning:['Merencanakan','plan'],usulan:['Usulan','plan'],running:['Berjalan','run'],final:['Laporan akhir','plan'],done:['Selesai','done'],batal:['Dibatalkan',''],'jeda-biaya':['Dijeda: batas biaya tercapai','plan'],dihentikan:['Dihentikan','']};
-const TUGAS_LBL={antre:'antre',kerja:'dikerjakan',lapor:'lapor ke manajer',selesai:'selesai',gagal:'gagal',revisi:'revisi',dihentikan:'Dihentikan','batas-langkah':'Berhenti: batas langkah'};
+const TUGAS_LBL={antre:'antre',kerja:'dikerjakan',lapor:'lapor ke manajer',selesai:'selesai',gagal:'gagal',revisi:'revisi',dihentikan:'Dihentikan','batas-langkah':'Berhenti: batas langkah',dilewati:'Dilewati'};
+// Modal "Naikkan batas & lanjut" (dipakai tombol HUD dan tombol utama kolom brief saat jeda biaya).
+function bukaNaikBatas(w){openModal('<h2>Naikkan batas &amp; lanjut</h2><div class="small">Terpakai $'+(w.biaya||0).toFixed(2)+' dari batas $'+batasWs(w).toFixed(2)+'. Isi batas baru (biaya-setara USD), harus lebih besar dari yang terpakai. 0 = tanpa batas.</div><div class="field"><input id="nb" type="number" min="0" step="0.05" inputmode="decimal" value="'+(Math.ceil(((w.biaya||0)+0.5)*100)/100)+'"></div><div class="row"><button class="btn sm" data-act="batas-ok">Naikkan &amp; lanjut</button><button class="btn ghost sm" data-close>Batal</button></div>');}
 // Rincian token (mode Laptop): biaya-setara paling menonjol; data lama tanpa rincian = "—".
 const fmtTok=n=>{n=n||0;return n<1000?String(n):n<1e6?(n/1000).toFixed(n<1e4?1:0)+'k':(n/1e6).toFixed(2)+'M'};
 function rincianHtml(r){
@@ -686,14 +688,15 @@ function renderHud(){
    '<div class="legend"><span><i style="background:var(--mg)"></i>Manajer</span><span><i style="background:var(--be)"></i>Backend</span><span><i style="background:var(--fe)"></i>Frontend</span><span><i style="background:var(--ds)"></i>Desain</span></div>'+
    (BR.on?'<div class="stats">'+rincianHtml(w.rincian)+'</div>':'')+
    (BR.on&&w.status==='jeda-biaya'?'<div class="note"><strong>Dijeda: batas biaya tercapai.</strong> Terpakai $'+(w.biaya||0).toFixed(2)+' dari batas $'+batasWs(w).toFixed(2)+'. Sesi yang sedang jalan dibiarkan selesai; tidak ada panggilan Claude baru.</div>':'')+
-   '<div class="row">'+(w.status==='done'?'<button class="btn sm" data-act="laporan">Baca laporan akhir</button>':'')+(BR.on&&((w.status==='idle'&&w.tasks.some(t=>t.status==='antre'))||w.status==='dihentikan')?'<button class="btn sm" data-act="lanjut">Lanjutkan</button>':'')+(BR.on&&w.status==='jeda-biaya'?'<button class="btn sm" data-act="batas-naik">Naikkan batas &amp; lanjut</button>':'')+(BR.on&&w.folder?'<span class="small" style="overflow-wrap:anywhere">'+esc(w.folder)+'</span>':'')+'</div>';
+   '<div class="row">'+(w.status==='done'?'<button class="btn sm" data-act="laporan">Baca laporan akhir</button>':'')+(BR.on&&((w.status==='idle'&&w.tasks.some(t=>t.status==='antre'))||w.status==='dihentikan')?'<button class="btn sm" data-act="lanjut">Lanjutkan</button>':'')+(BR.on&&w.status==='jeda-biaya'?'<button class="btn sm" data-act="batas-naik">Naikkan batas &amp; lanjut</button><button class="btn ghost sm" data-act="stop-ws">Hentikan</button>':'')+(BR.on&&w.folder?'<span class="small" style="overflow-wrap:anywhere">'+esc(w.folder)+'</span>':'')+'</div>';
   $('nT').textContent=w.tasks.length?n(['selesai'])+'/'+w.tasks.length:'';
   const busy=w.status==='planning'||w.status==='running'||w.status==='final'||(BR.on&&w.status==='jeda-biaya');
-  $('go').textContent=busy?'Hentikan':'Mulai';$('go').classList.toggle('ghost',busy);$('brief').disabled=busy;
+  const jedaBiaya=BR.on&&w.status==='jeda-biaya';
+  $('go').textContent=jedaBiaya?'Naikkan batas & lanjut':busy?'Hentikan':'Mulai';$('go').classList.toggle('ghost',busy&&!jedaBiaya);$('brief').disabled=busy;
 }
 function taskCard(w,t){
   const a=t.agent&&agentOf(w,t.agent);const p=Math.round((t.progress||0)*100);
-  return '<button class="card" data-task="'+t.id+'"><div class="m"><span class="divtag '+t.div+'">'+DIVS[t.div].nama+'</span>'+(a?esc(a.nama):'belum diambil')+(t.revisi?' · revisi':'')+(t.status==='gagal'||t.status==='dihentikan'||t.status==='batas-langkah'?' · <span style="color:var(--bad)">'+TUGAS_LBL[t.status]+'</span>':'')+'</div><div class="t">'+esc(t.title)+'</div>'+
+  return '<button class="card" data-task="'+t.id+'"><div class="m"><span class="divtag '+t.div+'">'+DIVS[t.div].nama+'</span>'+(a?esc(a.nama):'belum diambil')+(t.revisi?' · revisi':'')+(t.status==='gagal'||t.status==='dihentikan'||t.status==='batas-langkah'||t.status==='dilewati'?' · <span style="color:var(--bad)">'+TUGAS_LBL[t.status]+'</span>':'')+'</div><div class="t">'+esc(t.title)+'</div>'+
     (t.status==='kerja'?'<div class="bar"><b style="width:'+p+'%;background:var('+DIVS[t.div].css+')"></b></div>':'')+'</button>';
 }
 function renderPane(){
@@ -708,7 +711,7 @@ function renderPane(){
     else{
       if(w.status==='batal')h+='<div class="note" style="margin-bottom:14px"><strong>Usulan dibatalkan.</strong> Tidak ada staf yang dijalankan. Kirim brief baru kapan saja.</div>';
       if(w.ringkasan)h+='<div class="note" style="margin-bottom:14px"><strong>'+(w.mode==='solo'?'Solo.':'Rencana manajer.')+'</strong> '+esc(w.ringkasan)+'</div>';
-      [['Dikerjakan',['kerja']],['Review manajer',['lapor']],['Dihentikan (tekan Lanjutkan)',['dihentikan']],['Antre',['antre','revisi']],['Selesai',['selesai','gagal','batas-langkah']]].forEach(([l,s])=>{
+      [['Dikerjakan',['kerja']],['Review manajer',['lapor']],['Dihentikan (tekan Lanjutkan)',['dihentikan']],['Antre',['antre','revisi']],['Selesai',['selesai','gagal','batas-langkah','dilewati']]].forEach(([l,s])=>{
         const list=w.tasks.filter(t=>s.includes(t.status));if(!list.length)return;
         h+='<div class="group"><h3><span>'+l+'</span><span>'+list.length+'</span></h3>'+list.map(t=>taskCard(w,t)).join('')+'</div>';});
     }
@@ -765,7 +768,7 @@ $('modal').addEventListener('click',e=>{if(e.target.id==='modal'||e.target.datas
 function openTask(id){
   const w=W();const t=w.tasks.find(x=>x.id===id);if(!t)return;const a=t.agent&&agentOf(w,t.agent);
   const dep=t.after.map(i=>w.tasks.find(x=>x.id===i)).filter(Boolean).map(x=>esc(x.title)).join(', ');
-  openModal('<div class="row"><span class="divtag '+t.div+'">'+DIVS[t.div].nama+'</span><span class="pill">'+esc(TUGAS_LBL[t.status]||t.status)+'</span></div><h2>'+esc(t.title)+'</h2><div class="small">'+esc(t.detail)+'</div>'+(dep?'<div class="small">Menunggu: '+dep+'</div>':'')+'<div class="small">Dikerjakan: '+(a?esc(a.nama):'-')+'</div>'+(BR.on?'<div class="stats">'+rincianHtml(t.rincian)+'</div>':'')+(t.file&&t.file.length?'<div class="small">File: '+t.file.map(esc).join(', ')+'</div>':'')+(t.output?'<div class="out">'+linkify(w,t.output)+'</div>':'<div class="empty">Belum ada hasil.</div>')+'<div class="row">'+(t.output?'<button class="btn ghost sm" data-copy="'+t.id+'">Salin hasil</button>':'')+(t.status==='gagal'||(BR.on&&(t.status==='dihentikan'||t.status==='batas-langkah'))?'<button class="btn sm" data-retry="'+t.id+'">Coba lagi</button>':'')+(BR.on&&t.status==='kerja'?'<button class="btn sm" style="background:var(--bad);color:#fff" data-stoptask="'+t.id+'">Hentikan tugas ini</button>':'')+'<button class="btn sm" data-close>Tutup</button></div>');
+  openModal('<div class="row"><span class="divtag '+t.div+'">'+DIVS[t.div].nama+'</span><span class="pill">'+esc(TUGAS_LBL[t.status]||t.status)+'</span></div><h2>'+esc(t.title)+'</h2><div class="small">'+esc(t.detail)+'</div>'+(dep?'<div class="small">Menunggu: '+dep+'</div>':'')+'<div class="small">Dikerjakan: '+(a?esc(a.nama):'-')+'</div>'+(BR.on?'<div class="stats">'+rincianHtml(t.rincian)+'</div>':'')+(t.file&&t.file.length?'<div class="small">File: '+t.file.map(esc).join(', ')+'</div>':'')+(t.output?'<div class="out">'+linkify(w,t.output)+'</div>':'<div class="empty">Belum ada hasil.</div>')+'<div class="row">'+(t.output?'<button class="btn ghost sm" data-copy="'+t.id+'">Salin hasil</button>':'')+(t.status==='gagal'||(BR.on&&(t.status==='dihentikan'||t.status==='batas-langkah'||t.status==='dilewati'))?'<button class="btn sm" data-retry="'+t.id+'">Coba lagi</button>':'')+(BR.on&&t.status==='dihentikan'?'<button class="btn ghost sm" data-lewati="'+t.id+'">Lewati</button>':'')+(BR.on&&t.status==='kerja'?'<button class="btn sm" style="background:var(--bad);color:#fff" data-stoptask="'+t.id+'">Hentikan tugas ini</button>':'')+'<button class="btn sm" data-close>Tutup</button></div>');
   $('mbox').dataset.task=id;
 }
 document.addEventListener('click',async e=>{
@@ -779,7 +782,9 @@ document.addEventListener('click',async e=>{
     if(d.retry){call('ws/'+w.id+'/retry',{task:d.retry});$('modal').hidden=true;return;}
     if(d.act==='lanjut'){call('ws/'+w.id+'/lanjut',{});return;}
     if(d.stoptask){call('ws/'+w.id+'/stop-tugas',{task:d.stoptask},()=>toast('Tugas dihentikan'));$('modal').hidden=true;return;}
-    if(d.act==='batas-naik'){openModal('<h2>Naikkan batas &amp; lanjut</h2><div class="small">Terpakai $'+(w.biaya||0).toFixed(2)+' dari batas $'+batasWs(w).toFixed(2)+'. Isi batas baru (biaya-setara USD), harus lebih besar dari yang terpakai. 0 = tanpa batas.</div><div class="field"><input id="nb" type="number" min="0" step="0.05" inputmode="decimal" value="'+(Math.ceil(((w.biaya||0)+0.5)*100)/100)+'"></div><div class="row"><button class="btn sm" data-act="batas-ok">Naikkan &amp; lanjut</button><button class="btn ghost sm" data-close>Batal</button></div>');return;}
+    if(d.act==='batas-naik'){bukaNaikBatas(w);return;}
+    if(d.act==='stop-ws'){call('ws/'+w.id+'/stop',{},()=>toast('Workspace dihentikan'));return;}
+    if(d.lewati){call('ws/'+w.id+'/lewati',{task:d.lewati},()=>toast('Tugas dilewati. Tekan Lanjutkan untuk meneruskan.'));$('modal').hidden=true;return;}
     if(d.act==='batas-ok'){const v=$('nb').value.trim();if(v===''){toast('Isi angka batas baru.',true);return;}call('ws/'+w.id+'/batas',{batas:v,lanjut:true},()=>{$('modal').hidden=true;toast('Batas dinaikkan, dilanjutkan');});return;}
     if(d.act==='batas-simpan'){call('ws/'+w.id+'/batas',{batas:$('wsbatas').value.trim()},()=>toast('Batas disimpan'));return;}
     if(d.act==='usulan-jalan'){call('ws/'+w.id+'/jalankan',{});return;}
@@ -828,6 +833,7 @@ $('addWs').addEventListener('click',()=>openModal('<h2>Workspace baru</h2><div c
 $('handle').addEventListener('click',()=>$('sheet').classList.toggle('min'));
 $('composer').addEventListener('submit',e=>{
   e.preventDefault();const w=W();
+  if(BR.on&&w.status==='jeda-biaya'){bukaNaikBatas(w);return;}
   if(BR.on){const busy=w.status==='planning'||w.status==='running'||w.status==='final'||w.status==='jeda-biaya';const g=$('brief').value.trim();
     if(!busy&&!g){toast('Tulis brief dulu, satu kalimat juga cukup.');return;}
     api('ws/'+w.id+'/'+(busy?'stop':'brief'),busy?{}:{goal:g,mode:briefMode,batas:$('briefbatas').value.trim()}).then(()=>{if(!busy){$('brief').value='';tab='tugas';}}).catch(err=>toast(err.message,true));return;}

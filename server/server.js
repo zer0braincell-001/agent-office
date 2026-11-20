@@ -118,7 +118,8 @@ function bunuh(child) {
 }
 // Status akhir tugas. `dihentikan` sengaja TIDAK termasuk: tugas itu belum jadi, turunannya menunggu,
 // final() tidak jalan, dan Lanjutkan mengantrekannya ulang. gagal/batas-langkah diulang lewat Coba lagi.
-const SELESAI_TUGAS = ['selesai', 'gagal', 'batas-langkah'];
+// `dilewati` = tugas dihentikan yang sengaja dilewati user: dihitung selesai seperti gagal (turunannya jalan tanpa hasilnya).
+const SELESAI_TUGAS = ['selesai', 'gagal', 'batas-langkah', 'dilewati'];
 
 function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEvent, maxTurns = 0 }) {
   // Gerbang batas biaya: dicek sebelum SETIAP panggilan baru. Pemanggil yang memutuskan jeda.
@@ -263,7 +264,7 @@ async function work(w, a, t) {
   if (r.batas) { t.status = 'antre'; t.progress = 0; t.agent = null; a.state = 'idle'; a.task = null; a.aktivitas = ''; jedaBiaya(w, 'jadwal'); return; }
   t.rincian = tambahRincian(t.rincian || rincianKosong(), r.rincian);
   const lepas = () => { a.state = 'idle'; a.task = null; a.aktivitas = ''; changed(); };
-  if (t.status === 'dihentikan') { // rem darurat: proses sudah dibunuh, simpan apa yang sempat terbaca
+  if (t.status === 'dihentikan' || t.status === 'dilewati') { // rem darurat (atau sudah dilewati sebelum proses tertutup): simpan apa yang sempat terbaca, status tidak diubah
     t.output = r.text || r.teksTerakhir || t.output || ''; lepas(); log(w, a.nama, 'Dihentikan saat mengerjakan "' + t.title + '".'); return;
   }
   if (r.maxTurns) {
@@ -297,6 +298,7 @@ async function final(w) {
     const t = w.tasks[0] || {};
     w.laporan = t.status === 'selesai' ? (t.output || '(agen tidak menulis laporan)')
       : t.status === 'dihentikan' ? 'Tugas Solo dihentikan. Tekan Coba lagi di tugasnya untuk mengulang.' + (t.output ? '\n\nOutput terakhir:\n' + t.output : '')
+      : t.status === 'dilewati' ? 'Tugas Solo dilewati.' + (t.output ? '\n\nOutput terakhir:\n' + t.output : '')
       : t.status === 'batas-langkah' ? 'Berhenti: batas langkah tercapai. Tekan Coba lagi di tugasnya untuk mengulang.' + (t.output ? '\n\nOutput terakhir:\n' + t.output : '')
       : 'Tugas Solo gagal. Lihat Aktivitas untuk pesan error, lalu tekan Coba lagi di tugasnya.';
     w.status = 'done'; log(w, 'Sistem', 'Solo selesai. Laporan akhir siap dibaca.'); return;
@@ -470,6 +472,14 @@ http.createServer(async (req, res) => {
       log(w, 'Sistem', 'Workspace dihentikan (rem darurat). Tidak ada tugas baru yang dijadwalkan sampai kamu menekan Lanjutkan.'); return send(res, 200, { ok: true });
     }
     // Rem darurat per tugas: hanya tugas itu yang dibunuh; workspace ikut berhenti menjadwalkan.
+    // Lewati: tugas dihentikan dianggap selesai tanpa hasil. Status workspace tidak berubah (user tetap menekan Lanjutkan).
+    if (act === 'lewati') {
+      const t = w.tasks.find(x => x.id === b.task); if (!t || t.status !== 'dihentikan') return send(res, 409, { error: 'Hanya tugas yang dihentikan yang bisa dilewati' });
+      t.status = 'dilewati';
+      const turunan = w.tasks.filter(x => (x.after || []).includes(t.id)).map(x => x.title);
+      log(w, 'Sistem', 'Tugas "' + t.title + '" dilewati.' + (turunan.length ? ' Tugas yang bergantung padanya tetap jalan tanpa hasilnya: ' + turunan.join(', ') + '.' : ''));
+      return send(res, 200, { ok: true });
+    }
     if (act === 'stop-tugas') {
       const t = w.tasks.find(x => x.id === b.task); if (!t || t.status !== 'kerja') return send(res, 409, { error: 'Tugas tidak sedang berjalan' });
       t.status = 'dihentikan'; const r = running.get(w.id + ':' + t.agent); if (r) bunuh(r.child);
