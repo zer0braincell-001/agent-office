@@ -613,6 +613,40 @@ addEventListener('resize',resize);
 const $=id=>document.getElementById(id);
 const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 let tab='tugas';
+/* Lihat hasil (mode Laptop): daftar file workspace + link ke /hasil lewat server. */
+const HASIL={};// wsId -> {files,folder,err,at,p}
+function muatHasil(w,force){
+  const c=HASIL[w.id]||(HASIL[w.id]={files:null,err:'',at:0,p:null});
+  if(c.p)return c.p;
+  if(!force&&Date.now()-c.at<4000)return Promise.resolve(c);
+  c.p=api('ws/'+w.id+'/files').then(j=>{c.files=j.files||[];c.folder=j.folder;c.err='';},e=>{c.files=[];c.err=e.message;})
+    .finally(()=>{c.at=Date.now();c.p=null;dirty=true;}).then(()=>c);
+  return c.p;
+}
+const hasilUrl=(w,p)=>'/hasil/'+encodeURIComponent(w.id)+'/'+p.split('/').map(encodeURIComponent).join('/')+'?pin='+encodeURIComponent(BR.pin);
+const ukuran=n=>n<1024?n+' B':n<1048576?(n/1024).toFixed(1)+' KB':(n/1048576).toFixed(1)+' MB';
+function hasilHtml(w){
+  muatHasil(w);const c=HASIL[w.id];
+  let h='<div class="group"><h3><span>Hasil</span><span>'+(c.files&&!c.err?c.files.length+' file':'')+'</span></h3>';
+  if(c.err)h+='<div class="note">'+esc(c.err)+'</div>';
+  else if(!c.files)h+='<div class="small">Memuat daftar file…</div>';
+  else if(!c.files.length)h+='<div class="small">Folder workspace masih kosong.</div>';
+  else h+=c.files.map(f=>'<a class="card" href="'+esc(hasilUrl(w,f.path))+'" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:none;box-sizing:border-box"><div class="t" style="overflow-wrap:anywhere">'+esc(f.path)+'</div><div class="m">'+ukuran(f.size)+' · '+new Date(f.mtime).toLocaleString('id-ID',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})+'</div></a>').join('');
+  if(!c.err||c.folder)h+='<div class="row"><button class="btn ghost sm" data-act="buka-folder">Buka folder (di laptop)</button></div>';
+  return h+'</div>';
+}
+// Teks laporan/output → HTML aman: `nama-file` yang ada di daftar hasil dan URL http(s) jadi link.
+function linkify(w,text){
+  const s=esc(text);if(!BR.on)return s;
+  const files=(HASIL[w.id]&&HASIL[w.id].files)||[];
+  const cari=n=>{n=n.replace(/&amp;/g,'&').replace(/\\/g,'/').replace(/^\.\//,'');
+    const exact=files.find(f=>f.path===n);if(exact)return exact;
+    const base=files.filter(f=>f.path.split('/').pop()===n.split('/').pop());return base.length===1?base[0]:null;};
+  return s.replace(/`([^`\n]+)`|\bhttps?:\/\/(?:(?!&quot;|&lt;|&gt;)[^\s<>"'`])+/g,(m,code)=>{
+    if(code!=null){const f=cari(code);return f?'<a href="'+esc(hasilUrl(w,f.path))+'" target="_blank" rel="noopener noreferrer">`'+code+'`</a>':m;}
+    const url=m.replace(/[.,;:!?)\]]+$/,''),tail=m.slice(url.length);
+    return '<a href="'+url+'" target="_blank" rel="noopener noreferrer">'+url+'</a>'+tail;});
+}
 function toast(msg,bad){const t=$('toast');t.textContent=msg;t.style.color=bad?'var(--bad)':'';t.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>t.hidden=true,bad?6000:2600);}
 const STATUS_LBL={idle:['Belum mulai',''],planning:['Merencanakan','plan'],running:['Berjalan','run'],final:['Laporan akhir','plan'],done:['Selesai','done']};
 function renderTabs(){
@@ -648,6 +682,7 @@ function renderPane(){
         const list=w.tasks.filter(t=>s.includes(t.status));if(!list.length)return;
         h+='<div class="group"><h3><span>'+l+'</span><span>'+list.length+'</span></h3>'+list.map(t=>taskCard(w,t)).join('')+'</div>';});
     }
+    if(BR.on)h+=hasilHtml(w);
   }else if(tab==='log'){
     h=w.log.length?'<div class="log">'+w.log.map(l=>'<div><time>'+new Date(l.t).toLocaleTimeString('id-ID',{hour:'2-digit',minute:'2-digit'})+'</time><span><b>'+esc(l.who)+'</b> '+esc(l.msg)+'</span></div>').join('')+'</div>':'<div class="empty">Belum ada aktivitas.</div>';
   }else if(tab==='tim'){
@@ -694,12 +729,13 @@ function renderSel(){
   const t=a.task&&w.tasks.find(x=>x.id===a.task);
   el.hidden=false;el.innerHTML='<div class="row" style="justify-content:space-between"><span class="divtag '+a.div+'">'+(a.div==='manager'?'Manajer':DIVS[a.div].nama)+'</span><button class="btn ghost sm" data-act="unsel" aria-label="Tutup">Tutup</button></div><div class="t" style="font-weight:600;font-size:15px">'+esc(a.nama)+'</div><div class="small">'+esc(STATE_TXT[a.state]||a.state)+(t?': '+esc(t.title):'')+'</div>'+(t?'<div class="bar"><b style="width:'+Math.round(t.progress*100)+'%"></b></div>':'')+'<div class="small">'+(a.div==='manager'?'Membagi tugas dan mereview hasil.':a.selesai+' tugas selesai di proyek ini')+'</div><button class="btn sm" data-chat="'+a.id+'">Chat dengan '+esc(a.nama)+'</button>';
 }
-function openModal(html){$('mbox').innerHTML=html;$('modal').hidden=false;}
+function openModal(html){$('mbox').innerHTML=html;$('mbox').dataset.task='';$('modal').hidden=false;}
 $('modal').addEventListener('click',e=>{if(e.target.id==='modal'||e.target.dataset.close!=null)$('modal').hidden=true;});
 function openTask(id){
   const w=W();const t=w.tasks.find(x=>x.id===id);if(!t)return;const a=t.agent&&agentOf(w,t.agent);
   const dep=t.after.map(i=>w.tasks.find(x=>x.id===i)).filter(Boolean).map(x=>esc(x.title)).join(', ');
-  openModal('<div class="row"><span class="divtag '+t.div+'">'+DIVS[t.div].nama+'</span><span class="pill">'+t.status+'</span></div><h2>'+esc(t.title)+'</h2><div class="small">'+esc(t.detail)+'</div>'+(dep?'<div class="small">Menunggu: '+dep+'</div>':'')+'<div class="small">Dikerjakan: '+(a?esc(a.nama):'-')+'</div>'+(t.file&&t.file.length?'<div class="small">File: '+t.file.map(esc).join(', ')+'</div>':'')+(t.output?'<div class="out">'+esc(t.output)+'</div>':'<div class="empty">Belum ada hasil.</div>')+'<div class="row">'+(t.output?'<button class="btn ghost sm" data-copy="'+t.id+'">Salin hasil</button>':'')+(t.status==='gagal'?'<button class="btn sm" data-retry="'+t.id+'">Coba lagi</button>':'')+'<button class="btn sm" data-close>Tutup</button></div>');
+  openModal('<div class="row"><span class="divtag '+t.div+'">'+DIVS[t.div].nama+'</span><span class="pill">'+t.status+'</span></div><h2>'+esc(t.title)+'</h2><div class="small">'+esc(t.detail)+'</div>'+(dep?'<div class="small">Menunggu: '+dep+'</div>':'')+'<div class="small">Dikerjakan: '+(a?esc(a.nama):'-')+'</div>'+(t.file&&t.file.length?'<div class="small">File: '+t.file.map(esc).join(', ')+'</div>':'')+(t.output?'<div class="out">'+linkify(w,t.output)+'</div>':'<div class="empty">Belum ada hasil.</div>')+'<div class="row">'+(t.output?'<button class="btn ghost sm" data-copy="'+t.id+'">Salin hasil</button>':'')+(t.status==='gagal'?'<button class="btn sm" data-retry="'+t.id+'">Coba lagi</button>':'')+'<button class="btn sm" data-close>Tutup</button></div>');
+  $('mbox').dataset.task=id;
 }
 document.addEventListener('click',async e=>{
   const b=e.target.closest('button');if(!b)return;const d=b.dataset;const w=W();
@@ -710,6 +746,8 @@ document.addEventListener('click',async e=>{
     if(d.add||d.rm){call('ws/'+w.id+'/agen',{div:d.add||d.rm,tambah:!!d.add});return;}
     if(d.retry){call('ws/'+w.id+'/retry',{task:d.retry});$('modal').hidden=true;return;}
     if(d.act==='lanjut'){call('ws/'+w.id+'/lanjut',{});return;}
+    if(d.act==='buka-folder'){call('ws/'+w.id+'/buka-folder',{},j=>toast(j.pesan||'Folder dibuka di laptop'));return;}
+    if(d.task){openTask(d.task);muatHasil(w,true).then(()=>{if(!$('modal').hidden&&$('mbox').dataset.task===d.task)openTask(d.task);});return;}
     if(d.act==='rn-ok'){call('ws/'+w.id+'/rename',{nama:$('rn').value.trim()});$('modal').hidden=true;return;}
     if(d.act==='del-ok'){call('ws/'+w.id+'/hapus',{});$('modal').hidden=true;return;}
     if(d.act==='new-ok'){call('ws',{nama:$('nw').value.trim()||('Proyek '+(S.ws.length+1))},j=>{activeId=S.active=j.id;built=null;});$('modal').hidden=true;return;}
@@ -733,7 +771,7 @@ document.addEventListener('click',async e=>{
   else if(d.kdel){S.settings.keys.splice(+d.kdel,1);dirty=true;}
   else if(d.copy){const t=w.tasks.find(x=>x.id===d.copy);try{await navigator.clipboard.writeText(t.output);toast('Hasil disalin');}catch(_){toast('Gagal menyalin; pilih teksnya manual.',true);}}
   else if(d.retry){const t=w.tasks.find(x=>x.id===d.retry);t.status='antre';t.coba=0;t.agent=null;if(w.status==='done')w.status='running';$('modal').hidden=true;dirty=true;}
-  else if(d.act==='laporan')openModal('<h2>Laporan akhir · '+esc(w.nama)+'</h2><div class="out">'+esc(w.laporan||'')+'</div><div class="row"><button class="btn sm" data-close>Tutup</button></div>');
+  else if(d.act==='laporan'){const show=()=>{openModal('<h2>Laporan akhir · '+esc(w.nama)+'</h2><div class="out">'+linkify(w,w.laporan||'')+'</div><div class="row"><button class="btn sm" data-close>Tutup</button></div>');$('mbox').dataset.task='__laporan';};show();if(BR.on)muatHasil(w,true).then(()=>{if(!$('modal').hidden&&$('mbox').dataset.task==='__laporan')show();});}
   else if(d.act==='unsel')select(null);
   else if(d.act==='rename')openModal('<h2>Ganti nama workspace</h2><div class="field"><input id="rn" value="'+esc(w.nama)+'"></div><div class="row"><button class="btn sm" data-act="rn-ok">Simpan</button><button class="btn ghost sm" data-close>Batal</button></div>');
   else if(d.act==='rn-ok'){w.nama=$('rn').value.trim()||w.nama;$('modal').hidden=true;dirty=true;}

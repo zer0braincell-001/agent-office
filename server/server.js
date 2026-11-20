@@ -252,22 +252,86 @@ function send(res, code, obj) { res.writeHead(code, { 'content-type': 'applicati
 const WEB = path.join(ROOT, '..', 'index.html');
 const DASBOR = path.join(ROOT, '..', 'dashboard.html');
 
+/* ---------------- Lihat hasil: file di folder workspace ---------------- */
+const LEWATI = new Set(['.git', 'node_modules']);
+function daftarHasil(root, max = 2000) {
+  const out = [];
+  const jalan = (dir, rel) => {
+    let es; try { es = fs.readdirSync(dir, { withFileTypes: true }); } catch (e) { return; }
+    for (const e of es) {
+      if (out.length >= max) return;
+      if (e.isSymbolicLink() || LEWATI.has(e.name)) continue; // symlink tidak diikuti
+      const p = path.join(dir, e.name), r = rel ? rel + '/' + e.name : e.name;
+      if (e.isDirectory()) jalan(p, r);
+      else if (e.isFile()) { try { const st = fs.statSync(p); out.push({ path: r, size: st.size, mtime: st.mtimeMs }); } catch (err) {} }
+    }
+  };
+  jalan(root, '');
+  return out.sort((a, b) => a.path.localeCompare(b.path));
+}
+const TIPE = {
+  '.html': 'text/html; charset=utf-8', '.htm': 'text/html; charset=utf-8',
+  '.md': 'text/plain; charset=utf-8', '.txt': 'text/plain; charset=utf-8', '.json': 'text/plain; charset=utf-8',
+  '.js': 'text/plain; charset=utf-8', '.mjs': 'text/plain; charset=utf-8', '.css': 'text/plain; charset=utf-8',
+  '.csv': 'text/plain; charset=utf-8', '.log': 'text/plain; charset=utf-8',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+  '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.pdf': 'application/pdf',
+};
+const HDR_HASIL = { 'content-security-policy': 'sandbox', 'x-content-type-options': 'nosniff', 'cache-control': 'no-store' };
+function tolakHasil(res, code, msg) { res.writeHead(code, Object.assign({ 'content-type': 'text/plain; charset=utf-8' }, HDR_HASIL)); res.end(msg); }
+// Path relatif → path absolut di dalam folder workspace, atau null kalau keluar folder.
+function dalamFolder(folder, rel) {
+  if (!rel || rel.includes('\0') || path.isAbsolute(rel) || /^[a-zA-Z]:/.test(rel) || /^[\\/]/.test(rel)) return null;
+  if (rel.split(/[\\/]+/).includes('..')) return null;
+  const root = path.resolve(folder), full = path.resolve(root, rel);
+  if (!full.startsWith(root + path.sep)) return null;
+  let rRoot, rFull; try { rRoot = fs.realpathSync(root); rFull = fs.realpathSync(full); } catch (e) { return undefined; } // tidak ada
+  if (!rFull.startsWith(rRoot + path.sep)) return null; // symlink/junction keluar folder
+  return rFull;
+}
+function sajikanHasil(req, res) {
+  const m = req.url.split('?')[0].match(/^\/hasil\/([^/]+)\/(.+)$/);
+  if (!m) return tolakHasil(res, 404, 'Tidak ada');
+  const w = S.ws.find(x => x.id === m[1]); if (!w || !w.folder) return tolakHasil(res, 404, 'Workspace tidak ditemukan');
+  let rel; try { rel = decodeURIComponent(m[2]); } catch (e) { return tolakHasil(res, 400, 'Path tidak valid'); }
+  const full = dalamFolder(w.folder, rel);
+  if (full === null) return tolakHasil(res, 403, 'Ditolak: path di luar folder workspace');
+  let st; try { st = full && fs.statSync(full); } catch (e) {}
+  if (!st || !st.isFile()) return tolakHasil(res, 404, 'File tidak ditemukan');
+  res.writeHead(200, Object.assign({ 'content-type': TIPE[path.extname(full).toLowerCase()] || 'application/octet-stream', 'content-length': st.size }, HDR_HASIL));
+  fs.createReadStream(full).pipe(res);
+}
+
 http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x'); const p = u.pathname.split('/').filter(Boolean);
   try {
     if (req.method === 'GET' && (u.pathname === '/' || u.pathname === '/index.html')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return fs.createReadStream(WEB).pipe(res); }
     if (req.method === 'GET' && u.pathname === '/dashboard.html') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return fs.createReadStream(DASBOR).pipe(res); }
+    const pinOk = (req.headers['x-pin'] || u.searchParams.get('pin')) === CFG.pin;
+    // Dicek dari URL mentah: parser URL melipat "../" dan "%2e%2e" sebelum sampai sini.
+    if (/^\/hasil(\/|\?|$)/.test(req.url)) { if (req.method !== 'GET') return tolakHasil(res, 405, 'Pakai GET'); if (!pinOk) return tolakHasil(res, 401, 'PIN salah'); return sajikanHasil(req, res); }
     if (p[0] !== 'api') { res.writeHead(404); return res.end('Tidak ada'); }
-    if ((req.headers['x-pin'] || u.searchParams.get('pin')) !== CFG.pin) return send(res, 401, { error: 'PIN salah' });
+    if (!pinOk) return send(res, 401, { error: 'PIN salah' });
     if (p[1] === 'state') return send(res, 200, JSON.parse(snapshot()));
     if (req.method === 'GET' && p[1] === 'usage') return send(res, 200, await usage.ringkasan(CFG));
     if (req.method === 'GET' && p[1] === 'projects') return send(res, 200, usage.proyek(CFG));
     if (p[1] === 'events') { res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' }); res.write('data: ' + snapshot() + '\n\n'); clients.add(res); req.on('close', () => clients.delete(res)); return; }
+    if (req.method === 'GET' && p[1] === 'ws' && p[3] === 'files' && !p[4]) {
+      const w = S.ws.find(x => x.id === p[2]); if (!w) return send(res, 404, { error: 'Workspace tidak ditemukan' });
+      if (!w.folder || !fs.existsSync(w.folder) || !fs.statSync(w.folder).isDirectory()) return send(res, 404, { error: 'Folder tidak ditemukan: ' + (w.folder || '(kosong)'), folder: w.folder || '', ada: false });
+      return send(res, 200, { folder: w.folder, ada: true, files: daftarHasil(w.folder) });
+    }
     if (req.method !== 'POST') return send(res, 405, { error: 'Pakai POST' });
     const b = await body(req);
     if (p[1] === 'ws' && !p[2]) { const w = newWs(String(b.nama || 'Proyek ' + (S.ws.length + 1)).slice(0, 60)); return send(res, 200, { id: w.id }); }
     const w = S.ws.find(x => x.id === p[2]); if (!w) return send(res, 404, { error: 'Workspace tidak ditemukan' });
     const act = p[3];
+    if (act === 'buka-folder') {
+      if (!w.folder || !fs.existsSync(w.folder)) return send(res, 404, { error: 'Folder tidak ditemukan: ' + (w.folder || '(kosong)') });
+      if (process.platform !== 'win32') return send(res, 501, { error: 'Buka folder hanya di Windows. Folder: ' + w.folder });
+      spawn('explorer.exe', [w.folder], { detached: true, stdio: 'ignore', windowsHide: false }).on('error', () => {}).unref();
+      return send(res, 200, { ok: true, pesan: 'Folder dibuka di laptop (jendela Explorer): ' + w.folder });
+    }
     if (act === 'brief') {
       if (w.status === 'planning' || w.status === 'running' || w.status === 'final') return send(res, 409, { error: 'Proyek masih berjalan' });
       w.goal = String(b.goal || '').slice(0, 2000); w.tasks = []; w.laporan = ''; w.ringkasan = ''; w.status = 'planning';
