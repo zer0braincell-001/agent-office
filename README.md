@@ -22,7 +22,7 @@ Syarat: Node.js 18+ (`node -v`) dan Claude Code yang sudah login (`claude` lalu 
 - Chat langsung ke agen (ketuk agen → Chat). Pesan diawali `ingat:` disimpan ke memori agen (`data\agen\<nama>.md`).
 - Data (state, log, memori) di `C:\Users\<kamu>\KantorAgen\data`.
 - Token terpakai + perkiraan biaya-setara per workspace. Batas bisa diatur (`batasBiaya`).
-- Staf hanya boleh Read/Edit/Write/Glob/Grep. Bash (menjalankan perintah) belum diizinkan.
+- Staf hanya boleh Read/Edit/Write/Glob/Grep (`--tools`). Bash (menjalankan perintah) belum diizinkan. Semua agen tanpa MCP: `--strict-mcp-config` (server dari `.mcp.json`, `~/.claude.json`, plugin) + `ENABLE_CLAUDEAI_MCP_SERVERS=false` (konektor claude.ai). Tiap sesi mencatat alat yang tersedia di Aktivitas.
 - Review manajer di tahap 1 otomatis (tidak memanggil Claude) supaya hemat kuota.
 
 ### config.json

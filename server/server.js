@@ -134,10 +134,13 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
     const daftarAlat = (alat || []).filter(Boolean).join(',');
     const argAlat = daftarAlat ? ['--tools', daftarAlat, '--allowedTools', daftarAlat, '--permission-mode', 'acceptEdits']
       : ['--disallowedTools', 'Edit,Write,Bash,NotebookEdit'];
-    const args = ['-p', ...argAlat, '--output-format', 'stream-json', '--verbose', '--model', model, '--append-system-prompt-file', sysFile];
+    // MCP: agen tidak boleh punya alat MCP apa pun. --strict-mcp-config tanpa --mcp-config = server dari
+    // .mcp.json, ~/.claude.json, dan plugin tidak dimuat (CLI reference). Konektor claude.ai tidak disebut
+    // di sana; switch resminya ENABLE_CLAUDEAI_MCP_SERVERS=false (docs MCP, "Disable claude.ai connectors").
+    const args = ['-p', ...argAlat, '--strict-mcp-config', '--output-format', 'stream-json', '--verbose', '--model', model, '--append-system-prompt-file', sysFile];
     if (maxTurns > 0) args.push('--max-turns', String(maxTurns));
     if (resume) args.push('--resume', resume);
-    const env = Object.assign({}, process.env);
+    const env = Object.assign({}, process.env, { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' });
     const ak = CFG.akun[akun % CFG.akun.length] || {};
     if (ak.configDir) env.CLAUDE_CONFIG_DIR = ak.configDir;
     const win = process.platform === 'win32';
@@ -151,6 +154,14 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
         const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1); if (!line) continue;
         let ev; try { ev = JSON.parse(line); } catch (e) { continue; }
         if (ev.type === 'system' && ev.session_id) out.session = ev.session_id;
+        // Diagnostik alat: satu baris per sesi dari event init (SDKSystemMessage: tools string[], mcp_servers {name,status}[]).
+        if (ev.type === 'system' && ev.subtype === 'init' && !out.initDicatat) {
+          out.initDicatat = true;
+          const alatAda = (Array.isArray(ev.tools) ? ev.tools : []).map(x => typeof x === 'string' ? x : (x && x.name) || '?');
+          const mcp = (Array.isArray(ev.mcp_servers) ? ev.mcp_servers : []).map(s => typeof s === 'string' ? s : (s && s.name || '?') + (s && s.status ? ' (' + s.status + ')' : ''));
+          const [, aid, ekstra] = key.split(':'); const ag = agentOf(w, aid);
+          log(w, (ag ? ag.nama : 'Sistem') + (ekstra === 'chat' ? ' (chat)' : ''), 'Alat tersedia (' + alatAda.length + '): ' + (alatAda.join(', ') || '-') + ' · MCP: ' + (mcp.length ? mcp.join(', ') : 'tidak ada'));
+        }
         if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
           if (ev.message.usage) usagePesan.set(ev.message.id || ('m' + usagePesan.size), ev.message.usage);
           for (const b of ev.message.content) {
