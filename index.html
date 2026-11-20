@@ -708,7 +708,7 @@ function renderPane(){
     else{
       if(w.status==='batal')h+='<div class="note" style="margin-bottom:14px"><strong>Usulan dibatalkan.</strong> Tidak ada staf yang dijalankan. Kirim brief baru kapan saja.</div>';
       if(w.ringkasan)h+='<div class="note" style="margin-bottom:14px"><strong>'+(w.mode==='solo'?'Solo.':'Rencana manajer.')+'</strong> '+esc(w.ringkasan)+'</div>';
-      [['Dikerjakan',['kerja']],['Review manajer',['lapor']],['Antre',['antre','revisi']],['Selesai',['selesai','gagal','dihentikan','batas-langkah']]].forEach(([l,s])=>{
+      [['Dikerjakan',['kerja']],['Review manajer',['lapor']],['Dihentikan (tekan Lanjutkan)',['dihentikan']],['Antre',['antre','revisi']],['Selesai',['selesai','gagal','batas-langkah']]].forEach(([l,s])=>{
         const list=w.tasks.filter(t=>s.includes(t.status));if(!list.length)return;
         h+='<div class="group"><h3><span>'+l+'</span><span>'+list.length+'</span></h3>'+list.map(t=>taskCard(w,t)).join('')+'</div>';});
     }

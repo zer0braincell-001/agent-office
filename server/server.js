@@ -116,7 +116,9 @@ function bunuh(child) {
   if (process.platform === 'win32') { try { spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }).on('error', () => {}); } catch (e) {} }
   else { try { child.kill('SIGTERM'); } catch (e) {} }
 }
-const SELESAI_TUGAS = ['selesai', 'gagal', 'dihentikan', 'batas-langkah']; // status akhir tugas
+// Status akhir tugas. `dihentikan` sengaja TIDAK termasuk: tugas itu belum jadi, turunannya menunggu,
+// final() tidak jalan, dan Lanjutkan mengantrekannya ulang. gagal/batas-langkah diulang lewat Coba lagi.
+const SELESAI_TUGAS = ['selesai', 'gagal', 'batas-langkah'];
 
 function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEvent, maxTurns = 0 }) {
   // Gerbang batas biaya: dicek sebelum SETIAP panggilan baru. Pemanggil yang memutuskan jeda.
@@ -273,6 +275,7 @@ async function work(w, a, t) {
   }, 5000);
 }
 async function final(w) {
+  if (w.tasks.some(t => t.status === 'dihentikan')) return; // kerja belum jadi: tunggu Lanjutkan
   if (w.mode === 'solo') { // Solo: laporan = output agen itu sendiri, tanpa memanggil manajer.
     const t = w.tasks[0] || {};
     w.laporan = t.status === 'selesai' ? (t.output || '(agen tidak menulis laporan)')
@@ -318,6 +321,10 @@ setInterval(() => {
     if (w.status !== 'running') continue;
     const semuaSelesai = w.tasks.length && w.tasks.every(t => SELESAI_TUGAS.includes(t.status)) && !w.agents.some(a => a.state === 'lapor' || a.state === 'kerja');
     if (semuaSelesai && w.mode === 'solo') { final(w); continue; } // laporan Solo tidak memanggil Claude
+    // Tidak ada yang bisa dikerjakan selain tugas dihentikan (mis. setelah Coba lagi tugas lain): kembali ke Dihentikan supaya Lanjutkan muncul.
+    if (w.tasks.some(t => t.status === 'dihentikan') && !w.tasks.some(t => t.status === 'antre' || t.status === 'kerja' || t.status === 'lapor') && !w.agents.some(a => a.state === 'lapor' || a.state === 'kerja')) {
+      w.status = 'dihentikan'; log(w, 'Sistem', 'Antrean habis, masih ada tugas dihentikan. Tekan Lanjutkan untuk mengulangnya.'); continue;
+    }
     if (lewatBatas(w)) { jedaBiaya(w, 'jadwal'); continue; } // sesi yang sedang jalan dibiarkan selesai
     const aktif = akunAktif();
     for (const a of w.agents) {
@@ -449,11 +456,16 @@ http.createServer(async (req, res) => {
     if (act === 'stop-tugas') {
       const t = w.tasks.find(x => x.id === b.task); if (!t || t.status !== 'kerja') return send(res, 409, { error: 'Tugas tidak sedang berjalan' });
       t.status = 'dihentikan'; const r = running.get(w.id + ':' + t.agent); if (r) bunuh(r.child);
-      if (w.status === 'running') w.status = 'dihentikan';
+      if (w.status === 'running' || w.status === 'jeda-biaya') w.status = 'dihentikan';
       log(w, 'Sistem', 'Tugas "' + t.title + '" dihentikan (rem darurat). Tekan Lanjutkan untuk meneruskan antrean.'); return send(res, 200, { ok: true });
     }
     if (act === 'lanjut') {
       if (w.status !== 'idle' && w.status !== 'dihentikan') return send(res, 409, { error: 'Workspace tidak sedang berhenti' });
+      // Proses yang baru dibunuh belum tertutup: tunggu, supaya hasil run lama tidak menimpa run baru.
+      if (w.agents.some(a => a.state === 'kerja' && w.tasks.some(t => t.id === a.task && t.status === 'dihentikan'))) return send(res, 409, { error: 'Proses yang dihentikan masih ditutup. Coba lagi sebentar.' });
+      let ulang = 0;
+      for (const t of w.tasks) if (t.status === 'dihentikan') { t.status = 'antre'; t.progress = 0; t.agent = null; t.coba = 0; ulang++; }
+      if (ulang) log(w, 'Sistem', ulang + ' tugas yang dihentikan diantrekan ulang.');
       if (w.mode === 'tim' && !w.tasks.length && w.goal) { w.status = 'planning'; log(w, 'Sistem', 'Dilanjutkan: manajer menyusun ulang usulan.'); plan(w).then(changed); }
       else if (w.tasks.length) { w.status = 'running'; log(w, 'Sistem', 'Proyek dilanjutkan.'); }
       return send(res, 200, { ok: true });
