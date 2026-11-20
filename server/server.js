@@ -126,10 +126,16 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
   return new Promise((resolve) => {
     const sysFile = path.join(os.tmpdir(), 'kantor-sys-' + uid() + '.txt');
     fs.writeFileSync(sysFile, system || '');
-    const args = ['-p', '--output-format', 'stream-json', '--verbose', '--model', model, '--append-system-prompt-file', sysFile];
+    // Alat. Staf: --tools MEMBATASI alat bawaan yang tersedia (--allowedTools hanya izin otomatis; di
+    // acceptEdits Bash read-only seperti `ls` tetap jalan tanpa --tools). Tanpa alat (manajer/chat manajer):
+    // perilaku lama, Edit/Write/Bash/NotebookEdit diblokir.
+    // Opsi variadik dikirim sebagai SATU argumen dipisah koma dan selalu diikuti opsi lain (--output-format),
+    // jadi tidak ada argumen berikutnya yang tertelan sebagai nama alat. Prompt dikirim lewat stdin.
+    const daftarAlat = (alat || []).filter(Boolean).join(',');
+    const argAlat = daftarAlat ? ['--tools', daftarAlat, '--allowedTools', daftarAlat, '--permission-mode', 'acceptEdits']
+      : ['--disallowedTools', 'Edit,Write,Bash,NotebookEdit'];
+    const args = ['-p', ...argAlat, '--output-format', 'stream-json', '--verbose', '--model', model, '--append-system-prompt-file', sysFile];
     if (maxTurns > 0) args.push('--max-turns', String(maxTurns));
-    if (alat && alat.length) { args.push('--permission-mode', 'acceptEdits', '--allowedTools', ...alat); }
-    else args.push('--disallowedTools', 'Edit', 'Write', 'Bash', 'NotebookEdit');
     if (resume) args.push('--resume', resume);
     const env = Object.assign({}, process.env);
     const ak = CFG.akun[akun % CFG.akun.length] || {};
