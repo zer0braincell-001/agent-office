@@ -661,6 +661,7 @@ const TUGAS_LBL={antre:'antre',kerja:'dikerjakan',lapor:'lapor ke manajer',seles
 // Modal "Naikkan batas & lanjut" (dipakai tombol HUD dan tombol utama kolom brief saat jeda biaya).
 function bukaNaikBatas(w){openModal('<h2>Naikkan batas &amp; lanjut</h2><div class="small">Terpakai $'+(w.biaya||0).toFixed(2)+' dari batas $'+batasWs(w).toFixed(2)+'. Isi batas baru (biaya-setara USD), harus lebih besar dari yang terpakai. 0 = tanpa batas.</div><div class="field"><input id="nb" type="number" min="0" step="0.05" inputmode="decimal" value="'+(Math.ceil(((w.biaya||0)+0.5)*100)/100)+'"></div><div class="row"><button class="btn sm" data-act="batas-ok">Naikkan &amp; lanjut</button><button class="btn ghost sm" data-close>Batal</button></div>');}
 // Rincian token (mode Laptop): biaya-setara paling menonjol; data lama tanpa rincian = "—".
+const usdId=n=>'$'+(+n||0).toFixed(2).replace('.',',');
 const fmtTok=n=>{n=n||0;return n<1000?String(n):n<1e6?(n/1000).toFixed(n<1e4?1:0)+'k':(n/1e6).toFixed(2)+'M'};
 function rincianHtml(r){
   if(!r||!r.sesi)return '<span class="small">Rincian token: —</span>';
@@ -705,7 +706,10 @@ function renderPane(){
     if(w.status==='planning')h='<div class="empty">Arya sedang memecah brief menjadi tugas per divisi…</div>';
     else if(w.status==='usulan'){const u=w.usulan||{},r=u.rumus||{};
       h+='<div class="group"><h3><span>Usulan manajer</span><span>'+w.tasks.length+' tugas</span></h3>'+(w.ringkasan?'<div class="note">'+esc(w.ringkasan)+'</div>':'')+w.tasks.map(t=>taskCard(w,t)).join('')+
-        '<div class="card"><div class="t">Perkiraan kasar ±'+Math.round((u.perkiraanToken||0)/1000)+'k token</div><div class="m">'+w.tasks.length+' tugas × ±'+Math.round((r.perTugasStaf||0)/1000)+'k + ±'+Math.round((r.laporanManajer||0)/1000)+'k laporan manajer. Dari data patokan, bukan hitungan pasti. Solo biasanya jauh lebih murah.</div></div>'+
+        (u.perkiraanUsd!=null?'<div class="card"><div class="t">Perkiraan kasar ±'+usdId(u.perkiraanUsd)+' biaya-setara</div><div class="m">'+w.tasks.length+' tugas × ±'+usdId(r.perTugasStaf)+' + ±'+usdId(r.manajer)+' manajer (rencana + laporan). Dari data patokan, bukan hitungan pasti. Solo biasanya jauh lebih murah.</div></div>'+
+          (batasWs(w)&&u.perkiraanUsd>batasWs(w)?'<div class="note"><strong>Perkiraan melebihi batas biaya workspace ('+usdId(batasWs(w))+').</strong> Kalau dijalankan, workspace kemungkinan dijeda di tengah jalan sampai batas dinaikkan.</div>':'')
+        // Usulan lama (sebelum 2a-2f) menyimpan perkiraan dalam token.
+        :'<div class="card"><div class="t">Perkiraan kasar ±'+Math.round((u.perkiraanToken||0)/1000)+'k token</div><div class="m">Perkiraan lama dalam token. Dari data patokan, bukan hitungan pasti.</div></div>')+
         '<div class="row"><button class="btn sm" data-act="usulan-jalan">Jalankan</button><button class="btn ghost sm" data-act="usulan-batal">Batal</button></div></div>';}
     else if(!w.tasks.length)h='<div class="empty">Workspace ini belum punya tugas. Tulis brief di bawah, lalu Manajer akan membaginya ke Backend, Frontend, dan Desain.</div>';
     else{

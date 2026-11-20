@@ -121,6 +121,7 @@ function bunuh(child) {
 // `dilewati` = tugas dihentikan yang sengaja dilewati user: dihitung selesai seperti gagal (turunannya jalan tanpa hasilnya).
 const SELESAI_TUGAS = ['selesai', 'gagal', 'batas-langkah', 'dilewati'];
 
+const ALAT_MANAJER = 'Read,Glob,Grep';
 function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEvent, maxTurns = 0 }) {
   // Gerbang batas biaya: dicek sebelum SETIAP panggilan baru. Pemanggil yang memutuskan jeda.
   if (lewatBatas(w)) return Promise.resolve({ text: '', session: resume || null, biaya: 0, token: 0, error: 'Batas biaya workspace tercapai', batas: true, rincian: rincianKosong() });
@@ -128,13 +129,14 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
     const sysFile = path.join(os.tmpdir(), 'kantor-sys-' + uid() + '.txt');
     fs.writeFileSync(sysFile, system || '');
     // Alat. Staf: --tools MEMBATASI alat bawaan yang tersedia (--allowedTools hanya izin otomatis; di
-    // acceptEdits Bash read-only seperti `ls` tetap jalan tanpa --tools). Tanpa alat (manajer/chat manajer):
-    // perilaku lama, Edit/Write/Bash/NotebookEdit diblokir.
+    // acceptEdits Bash read-only seperti `ls` tetap jalan tanpa --tools). Tanpa alat = jalur manajer (rencana,
+    // laporan, chat manajer): --tools Read,Glob,Grep. Dulu cuma --disallowedTools, sehingga manajer membawa ~20 alat
+    // (Task, Cron*, RemoteTrigger, ScheduleWakeup, SendMessage, Skill, ...) dan bisa membuat jadwal/trigger (uji 20-11).
     // Opsi variadik dikirim sebagai SATU argumen dipisah koma dan selalu diikuti opsi lain (--output-format),
     // jadi tidak ada argumen berikutnya yang tertelan sebagai nama alat. Prompt dikirim lewat stdin.
     const daftarAlat = (alat || []).filter(Boolean).join(',');
     const argAlat = daftarAlat ? ['--tools', daftarAlat, '--allowedTools', daftarAlat, '--permission-mode', 'acceptEdits']
-      : ['--disallowedTools', 'Edit,Write,Bash,NotebookEdit'];
+      : ['--tools', ALAT_MANAJER];
     // MCP: agen tidak boleh punya alat MCP apa pun. --strict-mcp-config tanpa --mcp-config = server dari
     // .mcp.json, ~/.claude.json, dan plugin tidak dimuat (CLI reference). Konektor claude.ai tidak disebut
     // di sana; switch resminya ENABLE_CLAUDEAI_MCP_SERVERS=false (docs MCP, "Disable claude.ai connectors").
@@ -202,11 +204,11 @@ function stopAll(w) { for (const [k, r] of running) if (k.startsWith(w.id + ':')
 const mt = (peran) => { const v = (CFG.maxTurns || {})[peran]; return v > 0 ? +v : 0; };
 
 /* ---------------- Alur kerja ---------------- */
-// Perkiraan kasar token untuk Usulan mode Tim, TANPA memanggil Claude.
-// Sumber: data patokan 20-11 (brief kecil, 6 sesi = 477k): lantai biaya per sesi Claude Code
-// ≈ 20–30k + baca ulang konteks per request. Ubah angkanya di sini saja.
-const PERKIRAAN = { perTugasStaf: 100000, laporanManajer: 60000 };
-const perkiraanToken = (nTugas) => nTugas * PERKIRAAN.perTugasStaf + PERKIRAAN.laporanManajer;
+// Perkiraan kasar biaya-setara (USD) untuk Usulan mode Tim, TANPA memanggil Claude.
+// Sumber: uji asli 20-11 (3 tugas nyata 121k token / $0,39; perkiraan token lama 360k terlalu tinggi).
+// manajer = rencana + laporan akhir. Ubah angkanya di sini saja.
+const PERKIRAAN = { perTugasStaf: 0.04, manajer: 0.30 };
+const perkiraanUsd = (nTugas) => Math.round((nTugas * PERKIRAAN.perTugasStaf + PERKIRAAN.manajer) * 100) / 100;
 const SYS_MGR = 'Kamu Arya, kepala manajer proyek di Kantor Agen. Timmu: divisi backend, frontend, dan design. Jawab dalam bahasa Indonesia. Sapa pemilik proyek dengan "kamu", jangan "Bapak/Ibu".';
 // Mode Solo: satu sesi staf mengerjakan brief langsung, tanpa rencana dan tanpa laporan manajer.
 function mulaiSolo(w) {
@@ -234,9 +236,9 @@ async function plan(w) {
   w.tasks = j.tugas.map((t, i) => ({ id: ids[i], div: DIVS[t.divisi] ? t.divisi : 'frontend', title: t.judul, detail: t.detail, status: 'antre', agent: null, progress: 0, after: (t.setelah || []).map(k => ids[k]).filter(Boolean), revisi: 0, coba: 0, output: '', file: [] }));
   w.ringkasan = j.ringkasan || '';
   // Tim: rencana jadi Usulan dulu. Staf baru jalan setelah user menekan Jalankan.
-  w.usulan = { tugas: w.tasks.length, perkiraanToken: perkiraanToken(w.tasks.length), rumus: PERKIRAAN };
+  w.usulan = { tugas: w.tasks.length, perkiraanUsd: perkiraanUsd(w.tasks.length), rumus: PERKIRAAN };
   w.status = 'usulan';
-  log(w, 'Arya', 'Usulan siap: ' + w.tasks.length + ' tugas, perkiraan kasar ±' + Math.round(w.usulan.perkiraanToken / 1000) + 'k token. Tekan Jalankan untuk mulai. ' + w.ringkasan);
+  log(w, 'Arya', 'Usulan siap: ' + w.tasks.length + ' tugas, perkiraan kasar ±$' + w.usulan.perkiraanUsd.toFixed(2).replace('.', ',') + ' biaya-setara. Tekan Jalankan untuk mulai. ' + w.ringkasan);
 }
 function depsOk(w, t) { return t.after.every(id => { const x = w.tasks.find(y => y.id === id); return !x || SELESAI_TUGAS.includes(x.status); }); }
 async function work(w, a, t) {
