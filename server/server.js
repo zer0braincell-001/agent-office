@@ -298,5 +298,14 @@ http.createServer(async (req, res) => {
   console.log('  PIN      : ' + CFG.pin + '  (jangan dibagikan)');
   console.log('  Data     : ' + CFG.folderData);
   console.log('  Proyek   : ' + CFG.folderProyek + '\n');
+}).on('error', (e) => {
+  if (e.code !== 'EADDRINUSE') throw e;
+  console.error('\nPort ' + CFG.port + ' sudah dipakai. Kemungkinan server agent-office sudah jalan.');
+  console.error('  Buka     : http://localhost:' + CFG.port + '/?pin=' + CFG.pin);
+  console.error('  Dasbor   : http://localhost:' + CFG.port + '/dashboard.html?pin=' + CFG.pin);
+  console.error('  Atau matikan proses lama:');
+  console.error('    netstat -ano | findstr :' + CFG.port);
+  console.error('    taskkill /PID <pid> /F   (pid = angka di kolom terakhir)\n');
+  process.exit(1);
 });
 process.on('SIGINT', () => { for (const r of running.values()) try { r.child.kill(); } catch (e) {} fs.writeFileSync(STATE_PATH, JSON.stringify(S, null, 1)); process.exit(0); });
