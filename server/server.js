@@ -146,13 +146,27 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
 function stopAll(w) { for (const [k, r] of running) if (k.startsWith(w.id + ':')) { try { r.child.kill(); } catch (e) {} } }
 
 /* ---------------- Alur kerja ---------------- */
-const SYS_MGR = 'Kamu Arya, kepala manajer proyek di Kantor Agen. Timmu: divisi backend, frontend, dan design. Jawab dalam bahasa Indonesia.';
+// Perkiraan kasar token untuk Usulan mode Tim, TANPA memanggil Claude.
+// Sumber: data patokan 20-11 (brief kecil, 6 sesi = 477k): lantai biaya per sesi Claude Code
+// ≈ 20–30k + baca ulang konteks per request. Ubah angkanya di sini saja.
+const PERKIRAAN = { perTugasStaf: 100000, laporanManajer: 60000 };
+const perkiraanToken = (nTugas) => nTugas * PERKIRAAN.perTugasStaf + PERKIRAAN.laporanManajer;
+const SYS_MGR = 'Kamu Arya, kepala manajer proyek di Kantor Agen. Timmu: divisi backend, frontend, dan design. Jawab dalam bahasa Indonesia. Sapa pemilik proyek dengan "kamu", jangan "Bapak/Ibu".';
+// Mode Solo: satu sesi staf mengerjakan brief langsung, tanpa rencana dan tanpa laporan manajer.
+function mulaiSolo(w) {
+  const a = w.agents.find(x => x.div !== 'manager' && x.state === 'idle') || w.agents.find(x => x.div !== 'manager');
+  w.tasks = [{ id: uid(), div: a.div, title: 'Kerjakan brief (Solo)', detail: w.goal, status: 'antre', agent: null, pinAgent: a.id, solo: true, progress: 0, after: [], revisi: 0, coba: 0, output: '', file: [] }];
+  w.ringkasan = 'Mode Solo: dikerjakan ' + a.nama + ' sendirian dalam satu sesi, tanpa manajer.'; w.status = 'running';
+  log(w, 'Sistem', 'Mode Solo: ' + a.nama + ' mengerjakan brief langsung (1 sesi Claude, tanpa manajer).');
+}
 async function plan(w) {
   const m = agentOf(w, 'mgr'); m.state = 'rencana'; m.aktivitas = 'menyusun rencana'; changed();
   const tim = Object.keys(DIVS).map(d => DIVS[d] + ': ' + w.agents.filter(a => a.div === d).length + ' orang').join(', ');
   const r = await runClaude({ key: w.id + ':mgr', w, akun: 0, model: CFG.model.manajer, system: SYS_MGR + '\n\nMemori:\n' + memori(m),
     prompt: 'Brief dari bos: ' + w.goal + '\nNama proyek: ' + w.nama + '\nTim: ' + tim + '\nFolder kerja saat ini bisa kamu baca bila perlu.\n\n' +
-      'Pecah brief menjadi 3 sampai 9 tugas konkret. Tiap tugas dikerjakan satu orang dan menghasilkan file di folder proyek. ' +
+      'Pecah brief menjadi 1 sampai 9 tugas konkret. Tiap tugas dikerjakan satu orang dan menghasilkan file di folder proyek. ' +
+      'Aturan: jangan membuat tugas panduan, format, draf, atau review kecuali brief memintanya. Boleh hanya 1 tugas. ' +
+      'Pecah hanya kalau bagian-bagiannya memang bisa dikerjakan terpisah; tiap tugas tambahan menambah biaya. ' +
       'Balas HANYA dengan JSON valid tanpa teks lain, berbentuk: {"ringkasan":"...","tugas":[{"divisi":"backend|frontend|design","judul":"...","detail":"...","setelah":[indeks tugas lain yang harus selesai dulu]}]}',
     onEvent: ev => { if (ev.alat) { m.aktivitas = 'membaca ' + path.basename(String(ev.file || '')); changed(); } } });
   m.state = 'idle'; m.aktivitas = '';
@@ -160,8 +174,11 @@ async function plan(w) {
   let j; try { j = JSON.parse(r.text.slice(r.text.indexOf('{'), r.text.lastIndexOf('}') + 1)); } catch (e) { w.status = 'idle'; log(w, 'Sistem', 'Rencana manajer bukan JSON yang valid. Coba kirim brief lagi.'); return; }
   const ids = j.tugas.map(() => uid());
   w.tasks = j.tugas.map((t, i) => ({ id: ids[i], div: DIVS[t.divisi] ? t.divisi : 'frontend', title: t.judul, detail: t.detail, status: 'antre', agent: null, progress: 0, after: (t.setelah || []).map(k => ids[k]).filter(Boolean), revisi: 0, coba: 0, output: '', file: [] }));
-  w.ringkasan = j.ringkasan || ''; w.status = 'running';
-  log(w, 'Arya', 'Rencana siap: ' + w.tasks.length + ' tugas. ' + w.ringkasan);
+  w.ringkasan = j.ringkasan || '';
+  // Tim: rencana jadi Usulan dulu. Staf baru jalan setelah user menekan Jalankan.
+  w.usulan = { tugas: w.tasks.length, perkiraanToken: perkiraanToken(w.tasks.length), rumus: PERKIRAAN };
+  w.status = 'usulan';
+  log(w, 'Arya', 'Usulan siap: ' + w.tasks.length + ' tugas, perkiraan kasar ±' + Math.round(w.usulan.perkiraanToken / 1000) + 'k token. Tekan Jalankan untuk mulai. ' + w.ringkasan);
 }
 function depsOk(w, t) { return t.after.every(id => { const x = w.tasks.find(y => y.id === id); return !x || x.status === 'selesai' || x.status === 'gagal'; }); }
 async function work(w, a, t) {
@@ -170,8 +187,13 @@ async function work(w, a, t) {
   const deps = t.after.map(id => w.tasks.find(x => x.id === id)).filter(Boolean).map(x => '- ' + x.title + ' (oleh ' + ((agentOf(w, x.agent) || {}).nama || '-') + '): ' + (x.output || '').slice(0, 1500) + (x.file.length ? '\n  File: ' + x.file.join(', ') : '')).join('\n');
   let langkah = 0;
   const r = await runClaude({ key: w.id + ':' + a.id, w, akun: a.akun, model: CFG.model.staf, alat: CFG.alatStaf,
-    system: 'Kamu ' + a.nama + ', anggota divisi ' + DIVS[a.div] + ' di Kantor Agen. Kerjakan tugasmu langsung di folder proyek ini dengan membuat atau mengubah file. Jangan mengerjakan tugas divisi lain. Di akhir, tulis ringkasan singkat (maks 120 kata) tentang apa yang kamu buat dan file mana saja.\n\nMemori:\n' + memori(a),
-    prompt: 'Proyek: ' + w.nama + '\nBrief: ' + w.goal + '\nRencana manajer: ' + w.ringkasan + '\n\nTugasmu: ' + t.title + '\n' + t.detail + (deps ? '\n\nHasil rekan yang terkait:\n' + deps : '') + (t.catatan ? '\n\nCatatan dari bos/manajer: ' + t.catatan : ''),
+    system: t.solo
+      ? 'Kamu ' + a.nama + ' di Kantor Agen. Kerjakan brief ini sendirian, langsung di folder proyek ini dengan membuat atau mengubah file. Kerjakan secukupnya sesuai brief, tanpa file panduan/draf tambahan. ' +
+        'Di akhir, tulis laporan singkat (maks 150 kata) dalam bahasa Indonesia kasual untuk pemilik proyek, sapa dengan "kamu": apa yang sudah jadi dan langkah berikutnya kalau ada. Sebut setiap file hasil dalam backtick, misalnya `catatan.md`.\n\nMemori:\n' + memori(a)
+      : 'Kamu ' + a.nama + ', anggota divisi ' + DIVS[a.div] + ' di Kantor Agen. Kerjakan tugasmu langsung di folder proyek ini dengan membuat atau mengubah file. Jangan mengerjakan tugas divisi lain. Di akhir, tulis ringkasan singkat (maks 120 kata) tentang apa yang kamu buat dan file mana saja.\n\nMemori:\n' + memori(a),
+    prompt: t.solo
+      ? 'Proyek: ' + w.nama + '\nBrief: ' + w.goal + (t.catatan ? '\n\nCatatan dari pemilik proyek: ' + t.catatan : '')
+      : 'Proyek: ' + w.nama + '\nBrief: ' + w.goal + '\nRencana manajer: ' + w.ringkasan + '\n\nTugasmu: ' + t.title + '\n' + t.detail + (deps ? '\n\nHasil rekan yang terkait:\n' + deps : '') + (t.catatan ? '\n\nCatatan dari bos/manajer: ' + t.catatan : ''),
     onEvent: ev => {
       if (ev.alat) { langkah++; t.progress = Math.min(0.9, 0.05 + 0.85 * (1 - Math.exp(-langkah / 8)));
         const f = ev.file ? path.basename(String(ev.file)) : '';
@@ -187,6 +209,10 @@ async function work(w, a, t) {
     if (r.limit) { w.status = 'idle'; stopAll(w); log(w, 'Sistem', 'Kuota akun habis atau dibatasi. Workspace dijeda.'); }
     return;
   }
+  if (t.solo) { // Solo: tidak ada manajer yang menerima; langsung selesai.
+    t.output = r.text; t.progress = 1; t.status = 'selesai'; a.selesai++; a.state = 'idle'; a.task = null; a.aktivitas = '';
+    log(w, a.nama, 'Selesai mengerjakan brief.'); return;
+  }
   t.output = r.text; t.progress = 1; t.status = 'lapor'; a.state = 'lapor'; a.aktivitas = 'lapor ke manajer';
   log(w, a.nama, 'Selesai "' + t.title + '", menyerahkan ke Manajer.');
   // Tahap 1: review manajer otomatis tanpa memanggil Claude (hemat token). Jeda sebentar supaya terlihat di kantor.
@@ -198,11 +224,16 @@ async function work(w, a, t) {
   }, 5000);
 }
 async function final(w) {
+  if (w.mode === 'solo') { // Solo: laporan = output agen itu sendiri, tanpa memanggil manajer.
+    const t = w.tasks[0] || {};
+    w.laporan = t.status === 'selesai' ? (t.output || '(agen tidak menulis laporan)') : 'Tugas Solo gagal. Lihat Aktivitas untuk pesan error, lalu tekan Coba lagi di tugasnya.';
+    w.status = 'done'; log(w, 'Sistem', 'Solo selesai. Laporan akhir siap dibaca.'); return;
+  }
   w.status = 'final'; const m = agentOf(w, 'mgr'); m.state = 'rangkum'; m.aktivitas = 'menulis laporan';
   log(w, 'Arya', 'Semua tugas masuk. Menyusun laporan akhir.');
   const r = await runClaude({ key: w.id + ':mgr', w, akun: 0, model: CFG.model.manajer, system: SYS_MGR,
     prompt: 'Brief: ' + w.goal + '\n\nHasil tim:\n' + w.tasks.map(t => '- [' + t.div + '] ' + t.title + ' (' + t.status + '): ' + (t.output || '').slice(0, 800) + (t.file.length ? ' File: ' + t.file.join(', ') : '')).join('\n') +
-      '\n\nTulis laporan akhir untuk bos (maks 250 kata): apa yang sudah jadi, file mana yang perlu dibuka, dan langkah berikutnya. Boleh baca file di folder ini untuk mengecek.' });
+      '\n\nTulis laporan akhir untuk pemilik proyek (maks 250 kata), sapa dengan "kamu": apa yang sudah jadi, file mana yang perlu dibuka (tulis nama file dalam backtick), dan langkah berikutnya. Boleh baca file di folder ini untuk mengecek.' });
   w.laporan = r.error ? 'Laporan akhir gagal dibuat: ' + r.error : r.text;
   m.state = 'idle'; m.aktivitas = ''; w.status = 'done';
   log(w, 'Arya', 'Proyek selesai. Laporan akhir siap dibaca.');
@@ -235,7 +266,7 @@ setInterval(() => {
     for (const a of w.agents) {
       if (a.div === 'manager' || a.state !== 'idle') continue;
       if (aktif[a.akun] >= CFG.maxAgenPerAkun) continue;
-      const t = w.tasks.find(t => t.status === 'antre' && t.div === a.div && depsOk(w, t));
+      const t = w.tasks.find(t => t.status === 'antre' && t.div === a.div && (!t.pinAgent || t.pinAgent === a.id) && depsOk(w, t));
       if (t) { aktif[a.akun]++; work(w, a, t); }
     }
     if (w.tasks.length && w.tasks.every(t => t.status === 'selesai' || t.status === 'gagal') && !w.agents.some(a => a.state === 'lapor' || a.state === 'kerja')) final(w);
@@ -334,8 +365,19 @@ http.createServer(async (req, res) => {
     }
     if (act === 'brief') {
       if (w.status === 'planning' || w.status === 'running' || w.status === 'final') return send(res, 409, { error: 'Proyek masih berjalan' });
-      w.goal = String(b.goal || '').slice(0, 2000); w.tasks = []; w.laporan = ''; w.ringkasan = ''; w.status = 'planning';
-      log(w, 'Arya', 'Menerima brief: "' + w.goal + '". Menyusun rencana kerja.'); plan(w).then(changed); return send(res, 200, { ok: true });
+      w.goal = String(b.goal || '').slice(0, 2000); w.tasks = []; w.laporan = ''; w.ringkasan = ''; w.usulan = null;
+      w.mode = b.mode === 'tim' ? 'tim' : 'solo'; // default Solo
+      if (w.mode === 'solo') { mulaiSolo(w); return send(res, 200, { ok: true, mode: w.mode }); }
+      w.status = 'planning';
+      log(w, 'Arya', 'Menerima brief (mode Tim): "' + w.goal + '". Menyusun usulan rencana.'); plan(w).then(changed); return send(res, 200, { ok: true, mode: w.mode });
+    }
+    if (act === 'jalankan') {
+      if (w.status !== 'usulan') return send(res, 409, { error: 'Tidak ada usulan yang menunggu' });
+      w.status = 'running'; log(w, 'Sistem', 'Usulan disetujui. Staf mulai bekerja.'); return send(res, 200, { ok: true });
+    }
+    if (act === 'batal') {
+      if (w.status !== 'usulan') return send(res, 409, { error: 'Tidak ada usulan yang menunggu' });
+      w.status = 'batal'; log(w, 'Sistem', 'Usulan dibatalkan. Tidak ada staf yang dijalankan. Kirim brief baru kapan saja.'); return send(res, 200, { ok: true });
     }
     if (act === 'stop') { w.status = 'idle'; stopAll(w); for (const a of w.agents) { a.state = 'idle'; a.task = null; a.aktivitas = ''; } for (const t of w.tasks) if (t.status === 'kerja' || t.status === 'lapor') { t.status = 'antre'; t.agent = null; t.progress = 0; } log(w, 'Sistem', 'Proyek dihentikan.'); return send(res, 200, { ok: true }); }
     if (act === 'lanjut') { if (w.tasks.length && w.status === 'idle') { w.status = 'running'; log(w, 'Sistem', 'Proyek dilanjutkan.'); } return send(res, 200, { ok: true }); }
