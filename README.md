@@ -35,6 +35,7 @@ Syarat: Node.js 18+ (`node -v`) dan Claude Code yang sudah login (`claude` lalu 
 | `maxTurns` | batas langkah per sesi Claude (`--max-turns`): `staf` (juga Solo, default 25) dan `manajer` (default 10). 0 = tidak dikirim. Flag ini tidak tercantum di `claude --help` tapi diterima CLI (dicek di 2.1.329) |
 | `pin` | PIN akses web; ganti kalau bocor |
 | `vault` | folder vault Obsidian (berisi `INDEX.md` + `repos.md`) untuk daftar project di dasbor |
+| `indexVault` | path file `INDEX.md` vault, mis. `D:\Vault\INDEX.md`. Hanya file ini yang dibaca (read-only) untuk pintu proyek di lorong (`GET /api/proyek`): tabel di bawah `## Projects`, kolom Project/Ringkasan/Fase. Kosong = lorong menampilkan papan "Daftar proyek belum tersedia" |
 | `usage.folderLog` | folder log Claude Code (`...\.claude\projects`). Kosong = login default + `configDir` tiap akun |
 | `usage.akun` / `usage.org` | `accountUuid` / `organizationUuid` → nama tampilan akun |
 | `usage.fileLimit` | opsional: `plan-usage-history.json` Claude Desktop (sampel persen limit). Kosong = tidak dibaca |

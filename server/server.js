@@ -39,6 +39,8 @@ const DEFAULT_CONFIG = {
   pin: '',
   // Fase 0 (dasbor token): folder vault Obsidian (berisi INDEX.md + repos.md).
   vault: '',
+  // Fase 3b (lorong proyek): path INDEX.md vault. Hanya file ini yang dibaca (read-only) untuk GET /api/proyek.
+  indexVault: '',
   // folderLog kosong = ~/.claude/projects + configDir tiap akun. akun/org: uuid -> nama tampilan.
   // fileLimit: plan-usage-history.json Claude Desktop (opsional, '' = tidak dibaca).
   usage: { folderLog: [], akun: {}, org: {}, fileLimit: '' },
@@ -505,6 +507,76 @@ function sajikanHasil(req, res, pinOk) {
   fs.createReadStream(full).pipe(res);
 }
 
+/* ---------------- /api/proyek: daftar proyek untuk lorong (Fase 3b) ----------------
+   Membaca HANYA CFG.indexVault (INDEX.md vault), read-only, tidak pernah menulis. Parse tabel di bawah heading
+   "## Projects": kolom Project ([nama](projects/<slug>/STATE.md)), Ringkasan, Fase. Markdown dibersihkan jadi teks
+   polos. Cache per mtime+ukuran. Masalah apa pun = 200 dengan daftar kosong + alasan (web menampilkan papan alasan). */
+let CACHE_PROYEK = null;
+const BATAS_TEKS_PROYEK = { nama: 80, ringkasan: 400, fase: 400 };
+function teksPolos(t) {
+  return String(t || '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')            // gambar
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')             // link
+    .replace(/<[^>]*>/g, '')                              // tag HTML
+    .replace(/(\*\*|__)(.+?)\1/g, '$2')                   // tebal
+    .replace(/`+([^`]*)`+/g, '$1')                        // kode
+    .replace(/(^|[\s(])[*_]([^*_\s][^*_]*?)[*_](?=[\s).,;:!?]|$)/g, '$1$2') // miring
+    .replace(/\\([\\`*_{}\[\]()#+\-.!|])/g, '$1')           // escape markdown
+    .replace(/\s+/g, ' ').trim();
+}
+function selTabel(baris) {
+  const isi = baris.trim().replace(/^\|/, '').replace(/\|$/, '');
+  return isi.split(/(?<!\\)\|/).map(c => c.replace(/\\\|/g, '|').trim());
+}
+function parseProyek(teks) {
+  const baris = String(teks).split(/\r?\n/);
+  const h = baris.findIndex(b => /^##\s+Projects\s*$/i.test(b.trim()));
+  if (h < 0) return { proyek: [], alasan: 'Heading "## Projects" tidak ada di INDEX' };
+  const tabel = [];
+  for (let i = h + 1; i < baris.length; i++) {
+    const b = baris[i].trim();
+    if (!b) { if (tabel.length) break; continue; }
+    if (/^#/.test(b)) break;
+    if (!b.startsWith('|')) { if (tabel.length) break; continue; }
+    tabel.push(b);
+  }
+  if (tabel.length < 2) return { proyek: [], alasan: 'Tabel di bawah "## Projects" tidak terbaca' };
+  const kepala = selTabel(tabel[0]).map(c => teksPolos(c).toLowerCase());
+  const kol = { project: kepala.indexOf('project'), ringkasan: kepala.indexOf('ringkasan'), fase: kepala.indexOf('fase') };
+  if (kol.project < 0) return { proyek: [], alasan: 'Kolom "Project" tidak ada di tabel Projects' };
+  const proyek = [], dipakai = new Set();
+  for (const b of tabel.slice(1)) {
+    const c = selTabel(b);
+    if (c.every(x => /^:?-{2,}:?$/.test(x) || !x)) continue; // baris pemisah |---|
+    const mentah = c[kol.project] || '';
+    const link = /\[([^\]]+)\]\(([^)]*)\)/.exec(mentah);
+    const nama = teksPolos(link ? link[1] : mentah).slice(0, BATAS_TEKS_PROYEK.nama);
+    if (!nama) continue;
+    const dariLink = link && /(?:^|\/)projects\/([^/)]+)\//.exec(link[2]);
+    let slug = (dariLink ? dariLink[1] : nama).toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 60) || 'proyek';
+    while (dipakai.has(slug)) slug += '-2';
+    dipakai.add(slug);
+    proyek.push({ slug, nama,
+      ringkasan: kol.ringkasan >= 0 ? teksPolos(c[kol.ringkasan]).slice(0, BATAS_TEKS_PROYEK.ringkasan) : '',
+      fase: kol.fase >= 0 ? teksPolos(c[kol.fase]).slice(0, BATAS_TEKS_PROYEK.fase) : '' });
+  }
+  return { proyek, alasan: proyek.length ? null : 'Tabel Projects kosong' };
+}
+function bacaProyek() {
+  const f = CFG.indexVault;
+  if (!f) return { proyek: [], alasan: 'indexVault belum diisi di server/config.json' };
+  if (path.extname(f).toLowerCase() !== '.md') return { proyek: [], alasan: 'indexVault harus menunjuk file .md' };
+  let st; try { st = fs.statSync(f); } catch (e) { return { proyek: [], alasan: 'File INDEX tidak ditemukan' }; }
+  if (!st.isFile()) return { proyek: [], alasan: 'indexVault bukan file' };
+  if (st.size > 1e6) return { proyek: [], alasan: 'File INDEX terlalu besar (> 1 MB)' };
+  const kunci = path.resolve(f) + '|' + st.mtimeMs + '|' + st.size;
+  if (CACHE_PROYEK && CACHE_PROYEK.kunci === kunci) return CACHE_PROYEK.hasil;
+  let teks; try { teks = fs.readFileSync(f, 'utf8'); } catch (e) { return { proyek: [], alasan: 'File INDEX tidak bisa dibaca' }; }
+  let hasil; try { hasil = parseProyek(teks); } catch (e) { hasil = { proyek: [], alasan: 'Tabel Projects tidak terbaca' }; }
+  CACHE_PROYEK = { kunci, hasil };
+  return hasil;
+}
+
 /* ---------------- /aset: model & tekstur web (Fase 3a), publik baca-saja ----------------
    Hanya folder <repo>/aset. Tanpa PIN (isinya aset CC0 yang memang ada di repo publik). Path dicek dari URL mentah
    lewat dalamFolder (tolak .., absolut, drive, symlink/junction keluar folder). */
@@ -546,6 +618,7 @@ http.createServer(async (req, res) => {
     if (p[1] === 'state') return send(res, 200, JSON.parse(snapshot()));
     if (req.method === 'GET' && p[1] === 'usage') return send(res, 200, await usage.ringkasan(CFG));
     if (req.method === 'GET' && p[1] === 'projects') return send(res, 200, usage.proyek(CFG));
+    if (req.method === 'GET' && p[1] === 'proyek') return send(res, 200, bacaProyek());
     if (p[1] === 'events') { res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' }); res.write('data: ' + snapshot() + '\n\n'); clients.add(res); req.on('close', () => clients.delete(res)); return; }
     if (req.method === 'GET' && p[1] === 'ws' && p[3] === 'files' && !p[4]) {
       const w = S.ws.find(x => x.id === p[2]); if (!w) return send(res, 404, { error: 'Workspace tidak ditemukan' });
