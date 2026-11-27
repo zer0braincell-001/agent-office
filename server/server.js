@@ -505,11 +505,32 @@ function sajikanHasil(req, res, pinOk) {
   fs.createReadStream(full).pipe(res);
 }
 
+/* ---------------- /aset: model & tekstur web (Fase 3a), publik baca-saja ----------------
+   Hanya folder <repo>/aset. Tanpa PIN (isinya aset CC0 yang memang ada di repo publik). Path dicek dari URL mentah
+   lewat dalamFolder (tolak .., absolut, drive, symlink/junction keluar folder). */
+const ASET = path.join(ROOT, '..', 'aset');
+const TIPE_ASET = { '.glb': 'model/gltf-binary', '.gltf': 'model/gltf+json', '.png': 'image/png', '.jpg': 'image/jpeg', '.txt': 'text/plain; charset=utf-8' };
+function sajikanAset(req, res) {
+  const tolak = (code, msg) => { res.writeHead(code, { 'content-type': 'text/plain; charset=utf-8', 'x-content-type-options': 'nosniff' }); res.end(msg); };
+  if (req.method !== 'GET') { res.setHeader('allow', 'GET'); return tolak(405, 'Pakai GET'); }
+  const m = req.url.split('?')[0].match(/^\/aset\/(.+)$/); if (!m) return tolak(404, 'Tidak ada');
+  let rel; try { rel = decodeURIComponent(m[1]); } catch (e) { return tolak(400, 'Path tidak valid'); }
+  const full = dalamFolder(ASET, rel);
+  if (full === null) return tolak(403, 'Ditolak: path di luar folder aset');
+  const tipe = full && TIPE_ASET[path.extname(full).toLowerCase()];
+  let st; try { st = full && fs.statSync(full); } catch (e) {}
+  if (!st || !st.isFile()) return tolak(404, 'Tidak ada');
+  if (!tipe) return tolak(403, 'Jenis file tidak disajikan');
+  res.writeHead(200, { 'content-type': tipe, 'content-length': st.size, 'x-content-type-options': 'nosniff', 'cache-control': 'public, max-age=3600' });
+  fs.createReadStream(full).pipe(res);
+}
+
 http.createServer(async (req, res) => {
   const u = new URL(req.url, 'http://x'); const p = u.pathname.split('/').filter(Boolean);
   try {
     if (req.method === 'GET' && (u.pathname === '/' || u.pathname === '/index.html')) { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return fs.createReadStream(WEB).pipe(res); }
     if (req.method === 'GET' && u.pathname === '/dashboard.html') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }); return fs.createReadStream(DASBOR).pipe(res); }
+    if (/^\/aset(\/|\?|$)/.test(req.url)) return sajikanAset(req, res);
     const pinOk = (req.headers['x-pin'] || u.searchParams.get('pin')) === CFG.pin;
     // Dicek dari URL mentah: parser URL melipat "../" dan "%2e%2e" sebelum sampai sini.
     if (/^\/hasil(\/|\?|$)/.test(req.url)) { if (req.method !== 'GET') return tolakHasil(res, 405, 'Pakai GET'); return sajikanHasil(req, res, pinOk); }
