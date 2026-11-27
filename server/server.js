@@ -135,6 +135,26 @@ function bunuh(child) {
 const SELESAI_TUGAS = ['selesai', 'gagal', 'batas-langkah', 'dilewati'];
 
 const ALAT_MANAJER = 'Read,Glob,Grep';
+/* Akun agen belum login (2a-2i). Claude Code tanpa kredensial mengembalikan result is_error (subtype bisa "success",
+   biaya 0) berisi "Not logged in · Please run /login". Itu bukan error tugas: jangan retry, kembalikan tugas ke antrean,
+   workspace "butuh-login" sampai user login lalu menekan "Sudah login, lanjutkan". */
+const POLA_LOGIN = /not logged in|please run \/login|invalid api key|oauth token has expired|authentication_error/i;
+const dirAkun = (ak) => (ak && ak.configDir) || path.join(os.homedir(), '.claude');
+function infoAkun(i) { const ak = CFG.akun[i % CFG.akun.length] || {}; return { nama: ak.nama || ('Akun ' + (i + 1)), configDir: dirAkun(ak) }; }
+function butuhLogin(w, akun, dari) {
+  if (w.status === 'butuh-login') return; // sesi paralel lain yang gagal login: cukup satu log
+  const ak = infoAkun(akun);
+  w.status = 'butuh-login'; w.loginDari = dari; w.loginAkun = ak;
+  log(w, 'Sistem', 'Akun agen belum login: ' + ak.nama + ' (configDir ' + ak.configDir + '). Tugas dikembalikan ke antrean, tidak ada panggilan Claude baru. ' +
+    'Cara login (PowerShell): $env:CLAUDE_CONFIG_DIR="' + ak.configDir + '"; claude  lalu ketik /login. Setelah itu tekan "Sudah login, lanjutkan".');
+}
+/* Cek awal: hanya keberadaan <configDir>\.credentials.json (isi tidak dibaca). Peringatan saja, tidak memblokir:
+   kredensial bisa tersimpan di tempat lain. */
+let PERINGATAN_LOGIN = [];
+function cekKredensial() {
+  PERINGATAN_LOGIN = CFG.akun.map((ak, i) => infoAkun(i)).filter(x => !fs.existsSync(path.join(x.configDir, '.credentials.json')));
+  return PERINGATAN_LOGIN;
+}
 /* Diagnostik biaya (2a-2h): satu baris per sesi Claude di <folderData>/sesi.jsonl. Murni pencatatan, tidak dipakai
    untuk perhitungan apa pun. Tanpa teks prompt/output. Gagal menulis = diam. */
 const SESI_LOG = path.join(CFG.folderData, 'sesi.jsonl');
@@ -218,7 +238,8 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
       if (!adaResult) catatSesi(Object.assign(dasarSesi(), { subtype: 'tanpa-result', exitCode: code, session_id: out.session,
         stream: Object.assign(jumlahStream(usagePesan, nEventAssistant), { model: [...modelStream] }) }));
       if (!out.error && code !== 0 && !out.text) out.error = (errBuf.trim().split('\n').pop() || ('keluar dengan kode ' + code));
-      if (out.error && !out.maxTurns && /limit|quota|usage/i.test(out.error)) out.limit = true;
+      if (out.error && !out.maxTurns && (POLA_LOGIN.test(out.error) || POLA_LOGIN.test(out.text) || POLA_LOGIN.test(errBuf))) out.login = true;
+      else if (out.error && !out.maxTurns && /limit|quota|usage/i.test(out.error)) out.limit = true;
       if (!out.rincian) { // tanpa result (mis. dihentikan): pakai usage per pesan yang sudah terbaca; biaya tidak diketahui
         out.rincian = rincianKosong(); out.rincian.sesi = 1; out.rincian.sebagian = true;
         for (const u of usagePesan.values()) tambahRincian(out.rincian, Object.assign(dariUsage(u, 0), { sesi: 0 }));
@@ -262,6 +283,7 @@ async function plan(w) {
   m.state = 'idle'; m.aktivitas = '';
   if (r.batas) { jedaBiaya(w, 'plan'); return; }
   if (w.status === 'dihentikan') return; // dihentikan lewat rem darurat saat menyusun rencana
+  if (r.login) { butuhLogin(w, 0, 'plan'); return; }
   if (r.error) { w.status = 'idle'; log(w, 'Sistem', 'Manajer gagal menyusun rencana: ' + r.error); return; }
   let j; try { j = JSON.parse(r.text.slice(r.text.indexOf('{'), r.text.lastIndexOf('}') + 1)); } catch (e) { w.status = 'idle'; log(w, 'Sistem', 'Rencana manajer bukan JSON yang valid. Coba kirim brief lagi.'); return; }
   const ids = j.tugas.map(() => uid());
@@ -300,6 +322,9 @@ async function work(w, a, t) {
   const lepas = () => { a.state = 'idle'; a.task = null; a.aktivitas = ''; changed(); };
   if (t.status === 'dihentikan' || t.status === 'dilewati') { // rem darurat (atau sudah dilewati sebelum proses tertutup): simpan apa yang sempat terbaca, status tidak diubah
     t.output = r.text || r.teksTerakhir || t.output || ''; lepas(); log(w, a.nama, 'Dihentikan saat mengerjakan "' + t.title + '".'); return;
+  }
+  if (r.login) { // bukan kegagalan tugas: tanpa retry, coba tidak bertambah
+    t.status = 'antre'; t.progress = 0; t.agent = null; lepas(); butuhLogin(w, a.akun, 'jadwal'); return;
   }
   if (r.maxTurns) {
     t.status = 'batas-langkah'; t.output = r.text || r.teksTerakhir || ''; t.progress = 1; lepas();
@@ -345,6 +370,7 @@ async function final(w) {
   m.state = 'idle'; m.aktivitas = '';
   if (r.batas) { jedaBiaya(w, 'final'); return; }
   if (w.status === 'dihentikan') return; // rem darurat saat menulis laporan; Lanjutkan akan memanggil final lagi
+  if (r.login) { butuhLogin(w, 0, 'final'); return; } // lanjut -> running -> penjadwal memanggil final lagi
   w.laporan = r.error ? 'Laporan akhir gagal dibuat: ' + r.error : r.text;
   w.status = 'done';
   log(w, 'Arya', 'Proyek selesai. Laporan akhir siap dibaca.');
@@ -364,7 +390,9 @@ async function chat(w, a, pesan) {
     system: (a.div === 'manager' ? SYS_MGR : 'Kamu ' + a.nama + ', anggota divisi ' + DIVS[a.div] + ' di Kantor Agen.') + ' Bos sedang mengobrol langsung denganmu. Jawab singkat.\n\nMemori:\n' + memori(a),
     prompt: 'Status proyek: ' + w.status + '. Tugas: ' + w.tasks.map(t => t.title + ' [' + t.status + ']').join('; ') + '\n\nPesan bos: ' + pesan });
   if (r.session) a.session = r.session;
-  a.chat.push({ dari: a.nama, teks: r.error ? 'Gagal membalas: ' + r.error : r.text, t: Date.now() });
+  const akLogin = r.login && infoAkun(a.akun);
+  a.chat.push({ dari: a.nama, teks: akLogin ? 'Akun agen belum login: ' + akLogin.nama + ' (' + akLogin.configDir + '). Login dulu: $env:CLAUDE_CONFIG_DIR="' + akLogin.configDir + '"; claude lalu /login.'
+    : r.error ? 'Gagal membalas: ' + r.error : r.text, t: Date.now() });
   if (a.chat.length > 60) a.chat.splice(0, a.chat.length - 60);
   a.state = prevState === 'kerja' ? 'idle' : prevState; a.aktivitas = ''; changed();
 }
@@ -393,7 +421,7 @@ setInterval(() => {
 /* ---------------- HTTP ---------------- */
 const clients = new Set();
 let bcTimer = null;
-function snapshot() { return JSON.stringify({ ws: S.ws, info: { akun: CFG.akun.map(a => a.nama), aktif: akunAktif(), maxAgenPerAkun: CFG.maxAgenPerAkun, model: CFG.model, folderData: CFG.folderData, folderProyek: CFG.folderProyek, batasBiaya: CFG.batasBiaya, maxTurns: CFG.maxTurns } }); }
+function snapshot() { return JSON.stringify({ ws: S.ws, info: { akun: CFG.akun.map(a => a.nama), aktif: akunAktif(), maxAgenPerAkun: CFG.maxAgenPerAkun, model: CFG.model, folderData: CFG.folderData, folderProyek: CFG.folderProyek, batasBiaya: CFG.batasBiaya, maxTurns: CFG.maxTurns, peringatanLogin: PERINGATAN_LOGIN } }); }
 function broadcast() { if (bcTimer) return; bcTimer = setTimeout(() => { bcTimer = null; const s = 'data: ' + snapshot() + '\n\n'; for (const c of clients) c.write(s); }, 250); }
 function body(req) { return new Promise(r => { let b = ''; req.on('data', d => { b += d; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch (e) { r({}); } }); }); }
 function send(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); }
@@ -557,6 +585,15 @@ http.createServer(async (req, res) => {
       else if (w.tasks.length) { w.status = 'running'; log(w, 'Sistem', 'Proyek dilanjutkan.'); }
       return send(res, 200, { ok: true });
     }
+    // "Sudah login, lanjutkan": kembali ke tahap yang tertahan. Login tidak dicek di sini (bisa tersimpan di luar configDir);
+    // kalau masih belum login, panggilan berikutnya kembali ke butuh-login tanpa retry.
+    if (act === 'lanjut-login') {
+      if (w.status !== 'butuh-login') return send(res, 409, { error: 'Workspace tidak sedang menunggu login' });
+      const dari = w.loginDari; w.loginDari = null; w.loginAkun = null; cekKredensial();
+      if (dari === 'plan') { w.status = 'planning'; log(w, 'Sistem', 'Login dikonfirmasi. Manajer menyusun ulang usulan.'); plan(w).then(changed); }
+      else { w.status = 'running'; log(w, 'Sistem', 'Login dikonfirmasi. Antrean dilanjutkan.'); }
+      return send(res, 200, { ok: true });
+    }
     // Batas biaya per workspace. lanjut=true dari tombol "Naikkan batas & lanjut" (ACC).
     if (act === 'batas') {
       let n = null; if (b.batas != null && b.batas !== '') { n = +b.batas; if (!Number.isFinite(n) || n < 0) return send(res, 400, { error: 'Batas harus angka ≥ 0 (USD)' }); }
@@ -593,6 +630,10 @@ http.createServer(async (req, res) => {
   console.log('  PIN      : ' + CFG.pin + '  (jangan dibagikan)');
   console.log('  Data     : ' + CFG.folderData);
   console.log('  Proyek   : ' + CFG.folderProyek + '\n');
+  for (const x of cekKredensial()) {
+    console.warn('PERINGATAN: akun ' + x.nama + ' kemungkinan belum login: ' + path.join(x.configDir, '.credentials.json') + ' tidak ada.');
+    console.warn('  Login (PowerShell): $env:CLAUDE_CONFIG_DIR="' + x.configDir + '"; claude   lalu ketik /login\n');
+  }
 }).on('error', (e) => {
   if (e.code !== 'EADDRINUSE') throw e;
   console.error('\nPort ' + CFG.port + ' sudah dipakai. Kemungkinan server agent-office sudah jalan.');

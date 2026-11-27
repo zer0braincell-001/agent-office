@@ -657,7 +657,7 @@ function linkify(w,text){
     return '<a href="'+url+'" target="_blank" rel="noopener noreferrer">'+url+'</a>'+tail;});
 }
 function toast(msg,bad){const t=$('toast');t.textContent=msg;t.style.color=bad?'var(--bad)':'';t.hidden=false;clearTimeout(toast.h);toast.h=setTimeout(()=>t.hidden=true,bad?6000:2600);}
-const STATUS_LBL={idle:['Belum mulai',''],planning:['Merencanakan','plan'],usulan:['Usulan','plan'],running:['Berjalan','run'],final:['Laporan akhir','plan'],done:['Selesai','done'],batal:['Dibatalkan',''],'jeda-biaya':['Dijeda: batas biaya tercapai','plan'],dihentikan:['Dihentikan','']};
+const STATUS_LBL={idle:['Belum mulai',''],planning:['Merencanakan','plan'],usulan:['Usulan','plan'],running:['Berjalan','run'],final:['Laporan akhir','plan'],done:['Selesai','done'],batal:['Dibatalkan',''],'jeda-biaya':['Dijeda: batas biaya tercapai','plan'],dihentikan:['Dihentikan',''],'butuh-login':['Akun agen belum login','plan']};
 const TUGAS_LBL={antre:'antre',kerja:'dikerjakan',lapor:'lapor ke manajer',selesai:'selesai',gagal:'gagal',revisi:'revisi',dihentikan:'Dihentikan','batas-langkah':'Berhenti: batas langkah',dilewati:'Dilewati'};
 // Modal "Naikkan batas & lanjut" (dipakai tombol HUD dan tombol utama kolom brief saat jeda biaya).
 function bukaNaikBatas(w){openModal('<h2>Naikkan batas &amp; lanjut</h2><div class="small">Terpakai $'+(w.biaya||0).toFixed(2)+' dari batas $'+batasWs(w).toFixed(2)+'. Isi batas baru (biaya-setara USD), harus lebih besar dari yang terpakai. 0 = tanpa batas.</div><div class="field"><input id="nb" type="number" min="0" step="0.05" inputmode="decimal" value="'+(Math.ceil(((w.biaya||0)+0.5)*100)/100)+'"></div><div class="row"><button class="btn sm" data-act="batas-ok">Naikkan &amp; lanjut</button><button class="btn ghost sm" data-close>Batal</button></div>');}
@@ -683,14 +683,16 @@ function renderTabs(){
 function renderHud(){
   const w=W();const [lbl,cls]=STATUS_LBL[w.status]||['',''];const p=pct(w);
   const n=s=>w.tasks.filter(t=>s.includes(t.status)).length;
-  $('hud').innerHTML='<div class="row" style="justify-content:space-between"><h1>'+esc(w.nama)+'</h1><span class="pill '+cls+'">'+lbl+'</span></div>'+
+  const pl=BR.on?((BR.info||{}).peringatanLogin||[]):[];
+  $('hud').innerHTML=pl.map(x=>'<div class="note" style="color:var(--bad)"><strong>Akun '+esc(x.nama)+' kemungkinan belum login:</strong> '+esc(x.configDir)+'</div>').join('')+'<div class="row" style="justify-content:space-between"><h1>'+esc(w.nama)+'</h1><span class="pill '+cls+'">'+lbl+'</span></div>'+
    (w.goal?'<div class="goal">'+esc(w.goal)+'</div>':'<div class="goal">Belum ada brief. Tulis brief di kolom bawah.</div>')+
    '<div class="bar" role="progressbar" aria-valuenow="'+p+'" aria-valuemin="0" aria-valuemax="100"><b style="width:'+p+'%"></b></div>'+
    '<div class="stats"><span><strong>'+p+'%</strong> progres</span><span><strong>'+n(['selesai'])+'</strong>/'+w.tasks.length+' tugas</span><span><strong>'+n(['kerja'])+'</strong> aktif</span>'+(BR.on?'<span>setara <strong>$'+(w.biaya||0).toFixed(2)+'</strong>'+(batasWs(w)?' / $'+batasWs(w).toFixed(2):'')+'</span><span><strong>'+Math.round((w.token||0)/1000)+'k</strong> token</span>':S.settings.mode==='api'?'<span>biaya <strong>$'+w.biaya.toFixed(3)+'</strong></span>':'<span>mode <strong>simulasi</strong></span>')+'</div>'+
    '<div class="legend"><span><i style="background:var(--mg)"></i>Manajer</span><span><i style="background:var(--be)"></i>Backend</span><span><i style="background:var(--fe)"></i>Frontend</span><span><i style="background:var(--ds)"></i>Desain</span></div>'+
    (BR.on?'<div class="stats">'+rincianHtml(w.rincian)+'</div>':'')+
    (BR.on&&w.status==='jeda-biaya'?'<div class="note"><strong>Dijeda: batas biaya tercapai.</strong> Terpakai $'+(w.biaya||0).toFixed(2)+' dari batas $'+batasWs(w).toFixed(2)+'. Sesi yang sedang jalan dibiarkan selesai; tidak ada panggilan Claude baru.</div>':'')+
-   '<div class="row">'+(w.status==='done'?'<button class="btn sm" data-act="laporan">Baca laporan akhir</button>':'')+(BR.on&&((w.status==='idle'&&w.tasks.some(t=>t.status==='antre'))||w.status==='dihentikan')?'<button class="btn sm" data-act="lanjut">Lanjutkan</button>':'')+(BR.on&&w.status==='jeda-biaya'?'<button class="btn sm" data-act="batas-naik">Naikkan batas &amp; lanjut</button><button class="btn ghost sm" data-act="stop-ws">Hentikan</button>':'')+(BR.on&&w.folder?'<span class="small" style="overflow-wrap:anywhere">'+esc(w.folder)+'</span>':'')+'</div>';
+   (BR.on&&w.status==='butuh-login'?(()=>{const k=w.loginAkun||{};return '<div class="note"><strong>Akun agen belum login'+(k.nama?': '+esc(k.nama):'')+'.</strong> Tugas tetap di antrean, tidak ada panggilan Claude baru. Login di PowerShell laptop: <code style="overflow-wrap:anywhere">$env:CLAUDE_CONFIG_DIR="'+esc(k.configDir||'')+'"; claude</code> lalu ketik <code>/login</code>. Setelah itu tekan tombol di bawah.</div>';})():'')+
+   '<div class="row">'+(w.status==='done'?'<button class="btn sm" data-act="laporan">Baca laporan akhir</button>':'')+(BR.on&&((w.status==='idle'&&w.tasks.some(t=>t.status==='antre'))||w.status==='dihentikan')?'<button class="btn sm" data-act="lanjut">Lanjutkan</button>':'')+(BR.on&&w.status==='jeda-biaya'?'<button class="btn sm" data-act="batas-naik">Naikkan batas &amp; lanjut</button><button class="btn ghost sm" data-act="stop-ws">Hentikan</button>':'')+(BR.on&&w.status==='butuh-login'?'<button class="btn sm" data-act="lanjut-login">Sudah login, lanjutkan</button>':'')+(BR.on&&w.folder?'<span class="small" style="overflow-wrap:anywhere">'+esc(w.folder)+'</span>':'')+'</div>';
   $('nT').textContent=w.tasks.length?n(['selesai'])+'/'+w.tasks.length:'';
   const busy=w.status==='planning'||w.status==='running'||w.status==='final'||(BR.on&&w.status==='jeda-biaya');
   const jedaBiaya=BR.on&&w.status==='jeda-biaya';
@@ -786,6 +788,7 @@ document.addEventListener('click',async e=>{
     if(d.add||d.rm){call('ws/'+w.id+'/agen',{div:d.add||d.rm,tambah:!!d.add});return;}
     if(d.retry){call('ws/'+w.id+'/retry',{task:d.retry});$('modal').hidden=true;return;}
     if(d.act==='lanjut'){call('ws/'+w.id+'/lanjut',{});return;}
+    if(d.act==='lanjut-login'){call('ws/'+w.id+'/lanjut-login',{},()=>toast('Dilanjutkan'));return;}
     if(d.stoptask){call('ws/'+w.id+'/stop-tugas',{task:d.stoptask},()=>toast('Tugas dihentikan'));$('modal').hidden=true;return;}
     if(d.act==='batas-naik'){bukaNaikBatas(w);return;}
     if(d.act==='stop-ws'){call('ws/'+w.id+'/stop',{},()=>toast('Workspace dihentikan'));return;}
