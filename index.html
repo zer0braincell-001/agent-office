@@ -426,16 +426,43 @@ const cam={rot:0,theta:Math.PI/4,v:12,tx:0,tz:-1,goal:null}; // tx/tz = titik la
 function offPanel(){const w=innerWidth,h=innerHeight;if(w>=900)return {x:-210,y:0};const sh=document.getElementById('sheet');return {x:0,y:sh&&sh.classList.contains('min')?-.07*h:-.31*h};}
 const camTheta=()=>Math.PI/4+cam.rot*Math.PI/2;
 function css(v){return getComputedStyle(document.documentElement).getPropertyValue(v).trim()}
+let gelap=false;
 function applyTheme(){
   const bg=new THREE.Color(css('--scene')||'#dfe5ec');scene.background=bg;scene.fog=null;
-  const dark=bg.getHSL({}).l<.3;hemi.intensity=dark?.55:.85;sun.intensity=dark?.75:1.05;lamp.intensity=dark?1.2:.4;
+  gelap=bg.getHSL({}).l<.3;
   divColor={backend:new THREE.Color(css('--be')),frontend:new THREE.Color(css('--fe')),design:new THREE.Color(css('--ds')),manager:new THREE.Color(css('--mg'))};
+  terapkanCahaya();
 }
-const hemi=new THREE.HemisphereLight(0xffffff,0x8a8f99,.85);scene.add(hemi);
-// Satu-satunya sumber bayangan. Map 1024 cukup untuk kantor 28×20.
-const sun=new THREE.DirectionalLight(0xfff4e5,1.05);sun.position.set(10,22,12);sun.castShadow=true;
-sun.shadow.mapSize.set(1024,1024);sun.shadow.bias=-.0005;Object.assign(sun.shadow.camera,{left:-18,right:18,top:16,bottom:-16,near:1,far:60});scene.add(sun);
-const lamp=new THREE.PointLight(0xffd59a,.4,16);lamp.position.set(0,3.2,-7);scene.add(lamp);
+/* Alur warna: warna material linear -> tone mapping ACES -> keluaran sRGB. Tekstur warna (colormap Kenney, canvas)
+   ber-encoding sRGB. Elemen informasi di dunia (label, layar, papan nama, cincin divisi) toneMapped:false supaya
+   warnanya persis seperti di UI. */
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+const hemi=new THREE.HemisphereLight(0xe6edff,0x9a8c7a,.45);scene.add(hemi);
+// Satu-satunya sumber bayangan: matahari hangat dari arah jendela kiri-belakang (bayangan jatuh ke arah kamera). Map 1024.
+const sun=new THREE.DirectionalLight(0xffd7a3,2.4);sun.position.set(-15,15,-11);sun.castShadow=true;
+sun.shadow.mapSize.set(1024,1024);sun.shadow.bias=-.0004;sun.shadow.normalBias=.02;Object.assign(sun.shadow.camera,{left:-22,right:22,top:20,bottom:-20,near:1,far:80});scene.add(sun);
+// Cahaya isi dingin tanpa bayangan dari sisi berlawanan: sisi gelap tidak hitam, volume tetap terbaca.
+const isi=new THREE.DirectionalLight(0xc4d4ff,.35);isi.position.set(12,10,14);scene.add(isi);
+const lamp=new THREE.PointLight(0xffd59a,.4,16);lamp.position.set(0,3.2,-7);scene.add(lamp); // hanya tampilan kotak
+/* Lampu lantai Kenney (lampRoundFloor): PointLight kecil TANPA bayangan, maks 6, posisi tetap di kap lampu.
+   Dibuat sekali (jumlah lampu tetap = shader tidak dikompilasi ulang saat pod dibangun ulang). Mati di mode Hemat. */
+const LAMPU_POS=[[4.25,-8.7],[13.6,-10.3],[8.0,-10.3],...Object.values(DIVS).map(d=>[d.pos[0]-2.45,d.pos[1]+3.1])];
+const lampu=LAMPU_POS.slice(0,6).map(([x,z])=>{const l=new THREE.PointLight(0xffc27a,0,7,1.6);l.position.set(x,2.05,z);l.visible=false;scene.add(l);return l;});
+const matLampu=[]; // material kap lampu (emissive), diatur per tema
+// Terang = siang: matahari dominan, ambient rendah. Gelap = malam: cahaya bulan redup, lampu & layar dominan.
+const CAHAYA={
+  terang:{exp:1.1,hemi:[0xeef2ff,0xa89a86,.28],sun:[0xffd29a,2.8],isi:.18,lampu:.6,jarak:6,kap:.7,kotak:.4},
+  gelap:{exp:1.2,hemi:[0x4a5a88,0x1c1a22,.14],sun:[0x8fa6ff,.4],isi:.05,lampu:3.2,jarak:10,kap:2.6,kotak:1.4},
+};
+function terapkanCahaya(){
+  const c=CAHAYA[gelap?'gelap':'terang'],ken=typeof KEN!=='undefined'&&!!KEN.furn,hemat=!!(S.settings&&S.settings.hemat);
+  renderer.toneMappingExposure=c.exp;
+  hemi.color.setHex(c.hemi[0]);hemi.groundColor.setHex(c.hemi[1]);hemi.intensity=c.hemi[2];
+  sun.color.setHex(c.sun[0]);sun.intensity=c.sun[1];isi.intensity=c.isi;
+  lamp.visible=!ken;lamp.intensity=c.kotak;
+  for(const l of lampu){l.visible=ken&&!hemat;l.intensity=c.lampu;l.distance=c.jarak;}
+  for(const m of matLampu)m.emissiveIntensity=c.kap;
+}
 let divColor={};
 const M=(c,o={})=>new THREE.MeshStandardMaterial(Object.assign({color:c,roughness:.8,metalness:0},o));
 const MAT={floor:M(0xc9ced6),floor2:M(0xb9bfc9),wall:M(0xeef0f3),wood:M(0x9a6b45,{roughness:.6}),dark:M(0x2a2f38,{roughness:.5}),chair:M(0x3b4250),skin:M(0xf0c8a0),hair:M(0x3a2a20),glass:M(0x9fd3ff,{transparent:true,opacity:.18,roughness:.1}),leaf:M(0x3f9a5a),pot:M(0xd9d4cc),white:M(0xffffff)};
@@ -490,11 +517,11 @@ function kacaManajer(g){
   box(9.8,.12,.14,MAT.dark,0,2.42,-4.3,g);
 }
 function layarBesar(g){
-  const scr=new THREE.Mesh(new THREE.PlaneGeometry(6,2.6),new THREE.MeshBasicMaterial({map:screenTex}));scr.position.set(0,1.9,-10.68);g.add(scr);
+  const scr=new THREE.Mesh(new THREE.PlaneGeometry(6,2.6),new THREE.MeshBasicMaterial({map:screenTex,toneMapped:false}));scr.position.set(0,1.9,-10.68);g.add(scr);
   cutAdd('back',scr,'onwall');cutAdd('back',box(6.3,2.9,.08,MAT.dark,0,1.9,-10.72,g),'onwall');
 }
 function papanPantry(g){
-  const s=new THREE.Mesh(new THREE.PlaneGeometry(2.4,.6),new THREE.MeshBasicMaterial({map:textTex('PANTRY',{fg:'#6b7280',size:60}),transparent:true}));s.position.set(-11.2,2.3,-10.66);g.add(s);cutAdd('back',s,'onwall');
+  const s=new THREE.Mesh(new THREE.PlaneGeometry(2.4,.6),new THREE.MeshBasicMaterial({map:textTex('PANTRY',{fg:'#6b7280',size:60}),transparent:true,toneMapped:false}));s.position.set(-11.2,2.3,-10.66);g.add(s);cutAdd('back',s,'onwall');
 }
 const screenCan=document.createElement('canvas');screenCan.width=768;screenCan.height=332;
 const screenTex=new THREE.CanvasTexture(screenCan);screenTex.encoding=THREE.sRGBEncoding;
@@ -542,8 +569,11 @@ function muatKenney(){
 const matKenney=new Map();
 function litKenney(m0){
   let m=matKenney.get(m0.uuid);if(m)return m;
-  const kaca=/glass/i.test(m0.name||'');
+  const kaca=/glass/i.test(m0.name||''),kap=m0.name==='lamp';
+  // Konversi ini BUKAN tumpang-tindih dengan tone mapping: baseColorFactor Kenney berisi angka sRGB (wood 0,90/0,60/0,39
+  // = kayu oranye di preview Kenney), sedangkan glTF/three membacanya sebagai linear; tanpa konversi semua pucat.
   m=new THREE.MeshStandardMaterial({name:m0.name,color:m0.color.clone().convertSRGBToLinear(),map:m0.map||null,roughness:kaca?.15:.82,metalness:0,side:m0.side,transparent:kaca||m0.transparent,opacity:kaca?.35:m0.opacity});
+  if(kap){m.emissive=new THREE.Color(0xffcf8a).convertSRGBToLinear();m.emissiveIntensity=CAHAYA.terang.kap;matLampu.push(m);}
   matKenney.set(m0.uuid,m);return m;
 }
 function siapkanModel(o){
@@ -576,7 +606,7 @@ function bangunKenney(){
   for(let i=0;i<nx;i++)for(let j=0;j<nz;j++)tiles.push([-RX+K/2+i*K,RZ0+K/2+j*K]);
   f.obj.updateMatrixWorld(true);
   f.obj.traverse(m=>{if(!m.isMesh)return;
-    const mat=m.material.clone();mat.color.set(0xe4dccf).convertSRGBToLinear();
+    const mat=m.material.clone();mat.color.set(0xd9cdb8).convertSRGBToLinear();
     const im=new THREE.InstancedMesh(m.geometry,mat,tiles.length);im.receiveShadow=true;
     const lokal=new THREE.Matrix4().makeTranslation(-f.c.x,-f.size.y,-f.c.z).multiply(m.matrixWorld),mt=new THREE.Matrix4();
     tiles.forEach(([x,z],k)=>{mt.makeTranslation(x,0,z).multiply(new THREE.Matrix4().makeScale(K,K,K)).multiply(lokal);im.setMatrixAt(k,mt);});
@@ -622,7 +652,9 @@ function bangunKenney(){
   inst('pottedPlant',-13.4,-4.3);inst('pottedPlant',13.4,8.9);inst('pottedPlant',-13.4,8.9);inst('pottedPlant',-1.9,9.1);inst('pottedPlant',1.9,9.1);
   inst('cardboardBoxClosed',12.4,9.1);inst('cardboardBoxClosed',12.6,8.3,{rot:.4});inst('cardboardBoxClosed',12.5,8.8,{y:ukuranK('cardboardBoxClosed').y,rot:-.3});
   inst('plantSmall1',-6,8.9);inst('plantSmall1',6,8.9);
-  office.visible=false;officeK.visible=true;
+  // Layar monitor manajer: menyala lembut (tanpa tone mapping)
+  [-.75,.75].forEach(x=>{const sm=ukuranK('computerScreen');const p=new THREE.Mesh(new THREE.PlaneGeometry(sm.x*.86,sm.y*.62),new THREE.MeshBasicMaterial({color:0x5d7fb8,toneMapped:false}));p.rotation.y=Math.PI;p.position.set(x,atas+sm.y*.6,-6.95-sm.z/2-.012);officeK.add(p);});
+  office.visible=false;officeK.visible=true;terapkanCahaya();
 }
 
 // Pod divisi
@@ -637,7 +669,7 @@ function buildPods(w){
     if(ken){const r=ukuranK('rugRectangle');inst('rugRectangle',px,pz+.2,{sx:5.6/r.x,sz:5.2/r.z,parent:podGroup,warna:col.clone().lerp(new THREE.Color(0xffffff),.45)});
       inst('pottedPlant',px+2.45,pz+3.1,{parent:podGroup});inst('lampRoundFloor',px-2.45,pz+3.1,{parent:podGroup});}
     else{const rug=new THREE.Mesh(new THREE.BoxGeometry(5.6,.04,5.2),M(col.clone().lerp(new THREE.Color(0xffffff),.55)));rug.position.set(px,.02,pz+.2);rug.receiveShadow=true;podGroup.add(rug);}
-    const sign=new THREE.Mesh(new THREE.PlaneGeometry(3.4,.85),new THREE.MeshBasicMaterial({map:textTex(DIVS[d].nama.toUpperCase(),{fg:'#'+col.getHexString(),size:70}),transparent:true}));
+    const sign=new THREE.Mesh(new THREE.PlaneGeometry(3.4,.85),new THREE.MeshBasicMaterial({map:textTex(DIVS[d].nama.toUpperCase(),{fg:'#'+col.getHexString(),size:70}),transparent:true,toneMapped:false}));
     sign.rotation.x=-Math.PI/2;sign.position.set(px,.05,pz+3.25);podGroup.add(sign);
     const ag=w.agents.filter(a=>a.div===d);
     for(let i=0;i<ag.length;i++){
@@ -646,11 +678,11 @@ function buildPods(w){
         const dw=ukuranK('desk');inst('desk',dx,dz,{sz:.8,parent:podGroup});
         inst('computerScreen',dx,dz-.22,{y:dw.y,parent:podGroup});inst('computerKeyboard',dx-.05,dz+.12,{y:dw.y,parent:podGroup});inst('computerMouse',dx+.45,dz+.14,{y:dw.y,parent:podGroup});
         inst('chairDesk',dx,dz+.75,{rot:Math.PI,parent:podGroup});
-        const sm=ukuranK('computerScreen');scr=new THREE.Mesh(new THREE.PlaneGeometry(sm.x*.86,sm.y*.62),new THREE.MeshBasicMaterial({color:0x1b2330}));scr.position.set(dx,dw.y+sm.y*.6,dz-.22+sm.z/2+.012);
+        const sm=ukuranK('computerScreen');scr=new THREE.Mesh(new THREE.PlaneGeometry(sm.x*.86,sm.y*.62),new THREE.MeshBasicMaterial({color:0x1b2330,toneMapped:false}));scr.position.set(dx,dw.y+sm.y*.6,dz-.22+sm.z/2+.012);
       }else{
         box(2,.1,1,MAT.wood,dx,.9,dz,podGroup);box(.08,.85,.9,MAT.dark,dx-.9,.45,dz,podGroup);box(.08,.85,.9,MAT.dark,dx+.9,.45,dz,podGroup);
         box(.9,.55,.05,MAT.dark,dx,1.3,dz-.3,podGroup);box(.1,.3,.1,MAT.dark,dx,1.05,dz-.3,podGroup);
-        scr=new THREE.Mesh(new THREE.PlaneGeometry(.82,.47),new THREE.MeshBasicMaterial({color:0x1b2330}));scr.position.set(dx,1.3,dz-.27);
+        scr=new THREE.Mesh(new THREE.PlaneGeometry(.82,.47),new THREE.MeshBasicMaterial({color:0x1b2330,toneMapped:false}));scr.position.set(dx,1.3,dz-.27);
         box(.7,.08,.7,MAT.chair,dx,.55,dz+.75,podGroup);box(.7,.7,.08,MAT.chair,dx,.95,dz+1.08,podGroup);
       }
       podGroup.add(scr);deskScreens[d+i]=scr;
@@ -679,13 +711,19 @@ function makeChar(a){
   return g;
 }
 function labelSprite(g,y){
-  const lbl=new THREE.Sprite(new THREE.SpriteMaterial({depthTest:false,transparent:true}));lbl.scale.set(3.4,1.08,1);lbl.position.y=y;lbl.renderOrder=10;g.add(lbl);
+  const lbl=new THREE.Sprite(new THREE.SpriteMaterial({depthTest:false,transparent:true,toneMapped:false}));lbl.scale.set(3.4,1.08,1);lbl.position.y=y;lbl.renderOrder=10;g.add(lbl);
   const lc=document.createElement('canvas');lc.width=416;lc.height=132;lbl.material.map=new THREE.CanvasTexture(lc);lbl.material.map.encoding=THREE.sRGBEncoding;
   return {lbl,lc};
 }
 // Karakter mini Kenney: clone lewat SkeletonUtils (skinned mesh), satu AnimationMixer per agen.
 const CHAR_S=.8;  // karakter mini lebih besar dari skala furnitur; 0,8×K = ±1,4 tinggi, meja 1,0
-const SIT_Y=.12; // pose duduk Kenney + tinggi dudukan chairDesk
+/* Duduk: offset model per pose, dari ukuran geometri (bukan tebakan). Kursi (lokal, depan +z): tinggi dudukan dan
+   muka sandaran. Pose (pada CHAR_S, depan +z): dasar torso = pantat, belakang torso = punggung. "kerja" memakai badan
+   pose sit, jadi angkanya sama. Offset: y = dudukan - pantat*f, z = sandaran + celah - punggung*f (f = skala relatif,
+   manajer 1,1). Dengan ini tangan kanan pose kerja sampai ke keyboard (+-0,6 di depan pusat kursi, keyboard 0,48-0,79).
+   Satu-satunya tempat duduk agen = chairDesk (staf dan manajer); sofa/stool tidak pernah diduduki (rute tidak ke sana). */
+const DUDUK={kursi:{chairDesk:{dudukan:.61,sandaran:-.25,celah:.02}},pose:{sit:{pantat:.05,punggung:-.34},kerja:{pantat:.05,punggung:-.34}}};
+function offsetDuduk(pose,f,kursi='chairDesk'){const k=DUDUK.kursi[kursi],p=DUDUK.pose[pose];return p?{y:k.dudukan-p.pantat*f,z:k.sandaran+k.celah-p.punggung*f}:{y:0,z:0};}
 function makeCharKenney(a){
   const g=new THREE.Group();const mgr=a.div==='manager';
   const src=KEN.char[CHAR_OF[a.id]]||KEN.char[a.div==='manager'?'male-d':'male-a'];
@@ -693,11 +731,11 @@ function makeCharKenney(a){
   const mixer=new THREE.AnimationMixer(o);const c=KEN.clips,act={};
   for(const k of ['idle','walk','sit','sitBadan','interLengan','inter'])if(c[k])act[k]=mixer.clipAction(c[k]);
   // cincin warna divisi di kaki: identitas divisi terlihat dari sudut iso mana pun
-  const ring=new THREE.Mesh(new THREE.RingGeometry(.42,.56,28),new THREE.MeshBasicMaterial({color:divColor[a.div],transparent:true,opacity:.85,depthWrite:false}));ring.rotation.x=-Math.PI/2;ring.position.y=.03;g.add(ring);
+  const ring=new THREE.Mesh(new THREE.RingGeometry(.42,.56,28),new THREE.MeshBasicMaterial({color:divColor[a.div],transparent:true,opacity:.85,depthWrite:false,toneMapped:false}));ring.rotation.x=-Math.PI/2;ring.position.y=.03;g.add(ring);
   const doc=box(.3,.04,.38,MAT.white,0,.72,.36,g);doc.visible=false;
   const hit=new THREE.Mesh(new THREE.CylinderGeometry(.5,.5,1.6,10),HIT);hit.position.y=.8;hit.userData.agent=a.id;g.add(hit);
   const {lbl,lc}=labelSprite(g,2.25*(mgr?1.08:1));
-  g.userData={kenney:true,model:o,mixer,act,pose:'',ring,doc,lbl,lc,lastLbl:''};
+  g.userData={kenney:true,model:o,f:mgr?1.1:1,mixer,act,pose:'',ring,doc,lbl,lc,lastLbl:''};
   setPose(g.userData,'idle');
   return g;
 }
@@ -776,7 +814,8 @@ function animAgent(w,a,dt,visible){
     const duduk=!walking&&rt.at==='desk'&&Math.hypot(rt.x-seatOf(a).x,rt.z-seatOf(a).z)<.05;
     const sibuk=a.state==='kerja'||a.state==='rencana'||a.state==='rangkum'||a.state==='review';
     setPose(u,walking?'walk':duduk?(sibuk?'kerja':'sit'):(a.state==='lapor'?'interact':'idle'));
-    u.model.position.y=duduk?SIT_Y:0;
+    const od=duduk?offsetDuduk(u.pose,u.f):{y:0,z:0},kk=Math.min(1,dt*10); // halus saat duduk/berdiri
+    u.model.position.y+=(od.y-u.model.position.y)*kk;u.model.position.z+=(od.z-u.model.position.z)*kk;
     u.doc.visible=a.state==='lapor'&&walking;
     u.mixer.update(dt);
   }else{
@@ -856,7 +895,7 @@ function updateCam(dt){
 }
 function resize(){
   const w=innerWidth,h=innerHeight;renderer.setPixelRatio(S.settings.hemat?1:Math.min(devicePixelRatio,2));renderer.setSize(w,h,false);
-  renderer.shadowMap.enabled=!S.settings.hemat;sun.castShadow=!S.settings.hemat;
+  renderer.shadowMap.enabled=!S.settings.hemat;sun.castShadow=!S.settings.hemat;terapkanCahaya();
 }
 addEventListener('resize',resize);
 
