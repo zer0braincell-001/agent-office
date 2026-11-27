@@ -90,7 +90,12 @@ button{cursor:pointer}
 .briefmode{display:grid;gap:5px;padding:10px max(12px,env(safe-area-inset-right,0px)) 0 max(12px,env(safe-area-inset-left,0px));border-top:1px solid var(--line)}
 .briefmode[hidden]{display:none}
 .briefmode:not([hidden])+.composer{border-top:0}
-.composer textarea{flex:1;min-width:0;resize:none;height:42px;border-radius:12px;border:1px solid var(--line);background:var(--panel-solid);padding:10px 12px;line-height:1.35}
+.composer{align-items:flex-end}
+.inwrap{flex:1;min-width:0;display:flex;flex-direction:column;gap:4px}
+.hitung{font-family:var(--f-mono);font-size:11px;color:var(--muted);line-height:1.35}
+.hitung.dekat{color:var(--warn)}.hitung.lewat{color:var(--bad);font-family:inherit;font-size:12px}
+textarea.grow{min-height:42px;max-height:40vh;overflow-y:auto}
+.composer textarea{flex:none;width:100%;box-sizing:border-box;min-width:0;resize:none;height:42px;border-radius:12px;border:1px solid var(--line);background:var(--panel-solid);padding:10px 12px;line-height:1.35}
 .btn{border:0;border-radius:12px;padding:0 16px;height:42px;font-weight:600;background:var(--accent);color:var(--accent-fg);white-space:nowrap}
 .btn.ghost{background:var(--chip);color:var(--fg)}
 .btn.sm{height:32px;padding:0 12px;font-size:12.5px;border-radius:10px}
@@ -170,7 +175,7 @@ button.card:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
     <label class="small" style="display:flex;gap:8px;align-items:center">Batas biaya-setara $<input id="briefbatas" type="number" min="0" step="0.05" inputmode="decimal" placeholder="kosong = ikut config" aria-label="Batas biaya-setara workspace (USD), opsional" style="flex:1;min-width:0;height:28px;border-radius:8px;border:1px solid var(--line);background:var(--panel-solid);padding:0 8px"></label>
   </div>
   <form class="composer" id="composer">
-    <textarea id="brief" placeholder="Kasih brief ke Manajer, mis. &quot;Bikin landing page toko kue + form pesanan&quot;" aria-label="Brief untuk manajer"></textarea>
+    <div class="inwrap"><textarea id="brief" class="grow" rows="1" placeholder="Kasih brief ke Manajer, mis. &quot;Bikin landing page toko kue + form pesanan&quot;" aria-label="Brief untuk manajer" aria-describedby="briefhit"></textarea><div class="hitung" id="briefhit" aria-live="polite" hidden></div></div>
     <button class="btn" id="go" type="submit">Mulai</button>
   </form>
 </aside>
@@ -680,6 +685,26 @@ function renderTabs(){
   $('wstabs').innerHTML=S.ws.map(w=>{const st=w.status==='running'?'run':w.status==='done'?'done':(w.status==='planning'||w.status==='final'||w.status==='usulan')?'plan':'';
     return '<button class="wstab" role="tab" data-ws="'+w.id+'" aria-selected="'+(w.id===activeId)+'"><span class="dot '+st+'"></span>'+esc(w.nama)+'<span class="pct">'+pct(w)+'%</span></button>'}).join('');
 }
+/* Batas panjang input (sama dengan BATAS_INPUT di server; server mengirimnya lewat info). Lewat batas = tombol kirim
+   nonaktif + alasan; tidak pernah dipotong. Server tetap menolak 400 bila lolos dari sini. */
+const BATAS_TAMPIL=1500;
+const batasInput=j=>(((BR.info||{}).batasInput)||{brief:12000,chat:4000})[j];
+const fmtN=n=>n.toLocaleString('id-ID');
+function tumbuh(el){if(!el)return;if(!el.value){el.style.height='';return;}el.style.height='auto';el.style.height=Math.min(el.scrollHeight+2,Math.round(innerHeight*.4))+'px';}
+// Mengembalikan true kalau isi melebihi batas. Mengatur penghitung (muncul > BATAS_TAMPIL karakter).
+function cekPanjang(el,hit,jenis){
+  if(!el||!hit)return false;const n=el.value.trim().length,max=batasInput(jenis),lewat=n>max;
+  hit.hidden=n<=BATAS_TAMPIL&&!lewat;
+  hit.className='hitung'+(lewat?' lewat':n>=max*.9?' dekat':'');
+  hit.textContent=lewat?fmtN(n)+' / '+fmtN(max)+' karakter: terlalu panjang, tidak bisa dikirim. Pendekkan '+fmtN(n-max)+' karakter, atau taruh detail di file proyek.':fmtN(n)+' / '+fmtN(max);
+  return lewat;
+}
+function cekBrief(grow=true){
+  const el=$('brief'),lewat=cekPanjang(el,$('briefhit'),'brief');if(grow)tumbuh(el);
+  const g=$('go');if(g.textContent==='Mulai'){g.disabled=lewat;g.title=lewat?'Brief melebihi batas '+fmtN(batasInput('brief'))+' karakter':'';}else{g.disabled=false;g.title='';}
+  return lewat;
+}
+function cekChat(){const el=$('chatin');if(!el)return false;const lewat=cekPanjang(el,$('chathit'),'chat');tumbuh(el);const b=$('chatgo');if(b){b.disabled=lewat;b.title=lewat?'Pesan melebihi batas '+fmtN(batasInput('chat'))+' karakter':'';}return lewat;}
 function renderHud(){
   const w=W();const [lbl,cls]=STATUS_LBL[w.status]||['',''];const p=pct(w);
   const n=s=>w.tasks.filter(t=>s.includes(t.status)).length;
@@ -696,7 +721,7 @@ function renderHud(){
   $('nT').textContent=w.tasks.length?n(['selesai'])+'/'+w.tasks.length:'';
   const busy=w.status==='planning'||w.status==='running'||w.status==='final'||(BR.on&&w.status==='jeda-biaya');
   const jedaBiaya=BR.on&&w.status==='jeda-biaya';
-  $('go').textContent=jedaBiaya?'Naikkan batas & lanjut':busy?'Hentikan':'Mulai';$('go').classList.toggle('ghost',busy&&!jedaBiaya);$('brief').disabled=busy;
+  $('go').textContent=jedaBiaya?'Naikkan batas & lanjut':busy?'Hentikan':'Mulai';$('go').classList.toggle('ghost',busy&&!jedaBiaya);$('brief').disabled=busy;cekBrief(false);
 }
 function taskCard(w,t){
   const a=t.agent&&agentOf(w,t.agent);const p=Math.round((t.progress||0)*100);
@@ -833,6 +858,8 @@ document.addEventListener('click',async e=>{
   else if(d.act==='new-ok'){const n=$('nw').value.trim()||('Proyek '+(S.ws.length+1));const x=mkWs(n,'');S.ws.push(x);activeId=S.active=x.id;built=null;$('modal').hidden=true;dirty=true;setTimeout(()=>$('brief').focus(),50);}
 });
 document.addEventListener('input',e=>{const d=e.target.dataset;
+  if(e.target.id==='brief'){cekBrief();return;}
+  if(e.target.id==='chatin'){cekChat();return;}
   if(d.kl!=null)S.settings.keys[+d.kl].label=e.target.value;
   if(d.kk!=null)S.settings.keys[+d.kk].key=e.target.value;
   if(d.set){S.settings[d.set]=e.target.value;}
@@ -842,15 +869,16 @@ $('handle').addEventListener('click',()=>$('sheet').classList.toggle('min'));
 $('composer').addEventListener('submit',e=>{
   e.preventDefault();const w=W();
   if(BR.on&&w.status==='jeda-biaya'){bukaNaikBatas(w);return;}
+  if($('go').textContent==='Mulai'&&cekBrief()){toast('Brief melebihi batas '+fmtN(batasInput('brief'))+' karakter. Pendekkan dulu.',true);return;}
   if(BR.on){const busy=w.status==='planning'||w.status==='running'||w.status==='final'||w.status==='jeda-biaya';const g=$('brief').value.trim();
     if(!busy&&!g){toast('Tulis brief dulu, satu kalimat juga cukup.');return;}
-    api('ws/'+w.id+'/'+(busy?'stop':'brief'),busy?{}:{goal:g,mode:briefMode,batas:$('briefbatas').value.trim()}).then(()=>{if(!busy){$('brief').value='';tab='tugas';}}).catch(err=>toast(err.message,true));return;}
+    api('ws/'+w.id+'/'+(busy?'stop':'brief'),busy?{}:{goal:g,mode:briefMode,batas:$('briefbatas').value.trim()}).then(()=>{if(!busy){$('brief').value='';cekBrief();tab='tugas';}}).catch(err=>toast(err.message,true));return;}
   if(w.status==='planning'||w.status==='running'||w.status==='final'){
     w.status='idle';w.agents.forEach(a=>{if(a.state!=='idle'){a.state='idle';a.task=null;a.spot=null;goDesk(w,a);}});
     w.tasks.forEach(t=>{if(t.status==='kerja'||t.status==='lapor'){t.status='antre';t.agent=null;}});
     log(w,'Sistem','Proyek dihentikan.');dirty=true;return;}
   const g=$('brief').value.trim();if(!g){toast('Tulis brief dulu, satu kalimat juga cukup.');$('brief').focus();return;}
-  $('brief').value='';startBrief(w,g);tab='tugas';
+  $('brief').value='';cekBrief();startBrief(w,g);tab='tugas';
 });
 $('brief').addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('composer').requestSubmit();}});
 if(innerWidth<900)$('sheet').classList.add('min');
@@ -891,7 +919,7 @@ async function tryBridge(){
 }
 function openChat(id){
   if(!BR.on){openModal('<h2>Chat butuh mode Laptop</h2><div class="small">Chat langsung ke agen jalan kalau kantor dibuka dari server di laptopmu, karena agennya dijalankan Claude Code di sana.</div><div class="row"><button class="btn sm" data-close>Oke</button></div>');return;}
-  BR.chat=id;openModal('<div id="chatbox"></div><div class="row" style="flex-wrap:nowrap"><textarea id="chatin" style="flex:1;min-width:0;height:42px;border-radius:12px;border:1px solid var(--line);background:var(--panel-solid);padding:10px 12px;resize:none" placeholder="Tulis pesan. Awali dengan &quot;ingat:&quot; untuk menyimpan ke memori agen."></textarea><button class="btn" data-act="chat-kirim">Kirim</button></div><div class="row"><button class="btn ghost sm" data-close>Tutup</button></div>');
+  BR.chat=id;openModal('<div id="chatbox"></div><div class="row" style="flex-wrap:nowrap;align-items:flex-end"><div class="inwrap"><textarea id="chatin" class="grow" rows="1" aria-describedby="chathit" style="width:100%;box-sizing:border-box;height:42px;border-radius:12px;border:1px solid var(--line);background:var(--panel-solid);padding:10px 12px;resize:none" placeholder="Tulis pesan. Awali dengan &quot;ingat:&quot; untuk menyimpan ke memori agen."></textarea><div class="hitung" id="chathit" aria-live="polite" hidden></div></div><button class="btn" id="chatgo" data-act="chat-kirim">Kirim</button></div><div class="row"><button class="btn ghost sm" data-close>Tutup</button></div>');
   renderChat();setTimeout(()=>{const i=$('chatin');i&&i.focus();i&&i.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();sendChat();}});},30);
 }
 function renderChat(){
@@ -900,7 +928,9 @@ function renderChat(){
   box.innerHTML='<h2>Chat · '+esc(a.nama)+'</h2><div class="small">'+esc(a.aktivitas||STATE_TXT[a.state]||'')+'</div><div style="display:grid;gap:8px;margin-top:8px">'+((a.chat||[]).map(m=>'<div class="out" style="'+(m.dari==='kamu'?'background:color-mix(in srgb,var(--accent) 16%,var(--chip));justify-self:end;max-width:85%':'max-width:92%')+'"><b>'+esc(m.dari==='kamu'?'Kamu':m.dari)+'</b>\n'+esc(m.teks)+'</div>').join('')||'<div class="empty">Belum ada obrolan. Pesan ke agen memakai kuota akun Claude yang sama.</div>')+'</div>';
   box.parentElement.scrollTop=box.parentElement.scrollHeight;
 }
-function sendChat(){const i=$('chatin');const m=i&&i.value.trim();if(!m)return;i.value='';api('ws/'+W().id+'/chat',{agent:BR.chat,pesan:m}).catch(e=>toast(e.message,true));}
+function sendChat(){const i=$('chatin');const m=i&&i.value.trim();if(!m)return;
+  if(cekChat()){toast('Pesan melebihi batas '+fmtN(batasInput('chat'))+' karakter. Pendekkan dulu.',true);return;}
+  api('ws/'+W().id+'/chat',{agent:BR.chat,pesan:m}).then(()=>{if(i.value.trim()===m){i.value='';cekChat();}}).catch(e=>toast(e.message,true));}
 tryBridge();
 
 /* ====================== LOOP ====================== */

@@ -77,6 +77,14 @@ function mkAgents() {
   for (const d of Object.keys(DIVS)) for (let i = 0; i < 2; i++) ag.push({ id: d + i, nama: NAMES[d][i], div: d, slot: i, akun: (k++) % CFG.akun.length, state: 'idle', selesai: 0, chat: [] });
   return ag;
 }
+/* Batas panjang input user (karakter). Lewat batas = ditolak 400 dengan pesan jelas, TIDAK dipotong diam-diam
+   (27-11: brief 2.600 karakter terpotong di 2.000, agen kehilangan daftar larangan di akhir brief). Dikirim ke web lewat info. */
+const BATAS_INPUT = { brief: 12000, chat: 4000, nama: 60 };
+function terlaluPanjang(teks, jenis, label) {
+  const n = teks.length, max = BATAS_INPUT[jenis];
+  return n > max ? label + ' terlalu panjang: ' + n + ' karakter, batasnya ' + max + '. Tidak ada yang dikirim; pendekkan dulu.' : null;
+}
+const cuplikan = (s, n = 200) => s.length > n ? s.slice(0, n) + '… (' + s.length + ' karakter)' : s;
 function slug(s) { return (s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'proyek').slice(0, 40); }
 // Folder baru selalu unik: nama yang sudah dipakai workspace lain, atau folder yang sudah ada dan tidak kosong
 // (mis. sisa workspace yang dihapus — Hapus sengaja tidak menghapus folder), dilewati → -2, -3, dst.
@@ -421,7 +429,7 @@ setInterval(() => {
 /* ---------------- HTTP ---------------- */
 const clients = new Set();
 let bcTimer = null;
-function snapshot() { return JSON.stringify({ ws: S.ws, info: { akun: CFG.akun.map(a => a.nama), aktif: akunAktif(), maxAgenPerAkun: CFG.maxAgenPerAkun, model: CFG.model, folderData: CFG.folderData, folderProyek: CFG.folderProyek, batasBiaya: CFG.batasBiaya, maxTurns: CFG.maxTurns, peringatanLogin: PERINGATAN_LOGIN } }); }
+function snapshot() { return JSON.stringify({ ws: S.ws, info: { akun: CFG.akun.map(a => a.nama), aktif: akunAktif(), maxAgenPerAkun: CFG.maxAgenPerAkun, model: CFG.model, folderData: CFG.folderData, folderProyek: CFG.folderProyek, batasBiaya: CFG.batasBiaya, maxTurns: CFG.maxTurns, peringatanLogin: PERINGATAN_LOGIN, batasInput: BATAS_INPUT } }); }
 function broadcast() { if (bcTimer) return; bcTimer = setTimeout(() => { bcTimer = null; const s = 'data: ' + snapshot() + '\n\n'; for (const c of clients) c.write(s); }, 250); }
 function body(req) { return new Promise(r => { let b = ''; req.on('data', d => { b += d; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch (e) { r({}); } }); }); }
 function send(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); }
@@ -525,7 +533,10 @@ http.createServer(async (req, res) => {
     }
     if (req.method !== 'POST') return send(res, 405, { error: 'Pakai POST' });
     const b = await body(req);
-    if (p[1] === 'ws' && !p[2]) { const w = newWs(String(b.nama || 'Proyek ' + (S.ws.length + 1)).slice(0, 60)); return send(res, 200, { id: w.id }); }
+    if (p[1] === 'ws' && !p[2]) {
+      const nama = String(b.nama || 'Proyek ' + (S.ws.length + 1)); const e = terlaluPanjang(nama, 'nama', 'Nama workspace'); if (e) return send(res, 400, { error: e });
+      const w = newWs(nama); return send(res, 200, { id: w.id });
+    }
     const w = S.ws.find(x => x.id === p[2]); if (!w) return send(res, 404, { error: 'Workspace tidak ditemukan' });
     const act = p[3];
     if (act === 'buka-folder') {
@@ -536,12 +547,13 @@ http.createServer(async (req, res) => {
     }
     if (act === 'brief') {
       if (w.status === 'planning' || w.status === 'running' || w.status === 'final') return send(res, 409, { error: 'Proyek masih berjalan' });
-      w.goal = String(b.goal || '').slice(0, 2000); w.tasks = []; w.laporan = ''; w.ringkasan = ''; w.usulan = null;
+      const goal = String(b.goal || ''); const e = terlaluPanjang(goal, 'brief', 'Brief'); if (e) return send(res, 400, { error: e }); // state tidak disentuh
+      w.goal = goal; w.tasks = []; w.laporan = ''; w.ringkasan = ''; w.usulan = null;
       w.mode = b.mode === 'tim' ? 'tim' : 'solo'; // default Solo
       if (b.batas != null && b.batas !== '') { const n = +b.batas; if (Number.isFinite(n) && n >= 0) w.batas = n; } // kosong = batas lama/config tetap
       if (w.mode === 'solo') { mulaiSolo(w); return send(res, 200, { ok: true, mode: w.mode }); }
       w.status = 'planning';
-      log(w, 'Arya', 'Menerima brief (mode Tim): "' + w.goal + '". Menyusun usulan rencana.'); plan(w).then(changed); return send(res, 200, { ok: true, mode: w.mode });
+      log(w, 'Arya', 'Menerima brief (mode Tim): "' + cuplikan(w.goal) + '". Menyusun usulan rencana.'); plan(w).then(changed); return send(res, 200, { ok: true, mode: w.mode });
     }
     if (act === 'jalankan') {
       if (w.status !== 'usulan') return send(res, 409, { error: 'Tidak ada usulan yang menunggu' });
@@ -607,7 +619,7 @@ http.createServer(async (req, res) => {
       } else { log(w, 'Sistem', 'Batas biaya workspace: ' + (n == null ? 'ikut config' : n ? '$' + n.toFixed(2) : 'tanpa batas') + '.'); }
       return send(res, 200, { ok: true });
     }
-    if (act === 'rename') { w.nama = String(b.nama || w.nama).slice(0, 60); changed(); return send(res, 200, { ok: true }); }
+    if (act === 'rename') { const nama = String(b.nama || w.nama); const e = terlaluPanjang(nama, 'nama', 'Nama workspace'); if (e) return send(res, 400, { error: e }); w.nama = nama; changed(); return send(res, 200, { ok: true }); }
     if (act === 'hapus') { stopAll(w); S.ws = S.ws.filter(x => x !== w); changed(); return send(res, 200, { ok: true, catatan: 'Folder proyek tidak ikut dihapus.' }); }
     if (act === 'retry') { const t = w.tasks.find(x => x.id === b.task); if (t) { t.status = 'antre'; t.coba = 0; t.agent = null; if (w.status === 'done' || w.status === 'idle' || w.status === 'dihentikan') w.status = 'running'; changed(); } return send(res, 200, { ok: true }); }
     if (act === 'agen') {
@@ -617,7 +629,7 @@ http.createServer(async (req, res) => {
       if (!b.tambah && list.length > 1) { const a = list[list.length - 1]; w.agents = w.agents.filter(x => x !== a); }
       changed(); return send(res, 200, { ok: true });
     }
-    if (act === 'chat') { const a = agentOf(w, b.agent); if (!a) return send(res, 404, { error: 'Agen tidak ditemukan' }); chat(w, a, String(b.pesan || '').slice(0, 4000)); return send(res, 200, { ok: true }); }
+    if (act === 'chat') { const a = agentOf(w, b.agent); if (!a) return send(res, 404, { error: 'Agen tidak ditemukan' }); const pesan = String(b.pesan || ''); const e = terlaluPanjang(pesan, 'chat', 'Pesan chat'); if (e) return send(res, 400, { error: e }); chat(w, a, pesan); return send(res, 200, { ok: true }); }
     return send(res, 404, { error: 'Aksi tidak dikenal' });
   } catch (e) { console.error(e); send(res, 500, { error: e.message }); }
 }).listen(CFG.port, CFG.host, () => {
