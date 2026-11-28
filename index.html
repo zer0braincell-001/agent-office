@@ -923,8 +923,8 @@ function masukRuang(i){
     x.fillStyle='#fbfbfd';rr(x,6,6,w-12,h-12,26);x.fill();x.fillStyle=war.css;rr(x,6,6,w-12,22,10);x.fill();
     x.textAlign='left';x.textBaseline='alphabetic';x.fillStyle='#10161f';pasHuruf(x,p.nama,w-90,72);x.fillText(p.nama,44,116);
     x.fillStyle='#6b7280';x.font='700 26px Inter,sans-serif';x.fillText('FASE',44,176);
-    const r=PRJ.ruang&&PRJ.ruang.g===g?PRJ.ruang:null,d=r&&r.detail; // NEXT x/y di kanan baris FASE
-    const nt=d?(d.next.length?'NEXT '+d.next.filter(b=>b.selesai).length+'/'+d.next.length:'NEXT -'):r&&r.detailGagal?'':'NEXT \u2026';
+    const r=PRJ.ruang&&PRJ.ruang.g===g?PRJ.ruang:null,d=r&&r.detail; // NEXT x/y (checklist) / N butir (daftar) di kanan baris FASE
+    const nt=d?(!d.next.length?'NEXT -':d.nextJenis==='daftar'?'NEXT '+d.next.length+' butir':'NEXT '+d.next.filter(b=>b.selesai).length+'/'+d.next.length):r&&r.detailGagal?'':'NEXT \u2026';
     if(nt){x.textAlign='right';x.font='700 30px JetBrains Mono,monospace';x.fillStyle=d?war.css:'#9ca3af';x.fillText(nt,w-44,178);x.textAlign='left';}
     x.fillStyle='#1f2937';x.font='500 32px Inter,sans-serif';bungkus(x,p.fase||'-',w-90,4).forEach((l,k)=>x.fillText(l,44,220+k*42));
     x.fillStyle='#6b7280';x.font='700 26px Inter,sans-serif';x.fillText('RINGKASAN',44,422);
@@ -961,12 +961,12 @@ function isiDetail(){
   const ds=buat('details');ds.open=lebar;ds.append(buat('summary','','Status sekarang'));
   if(d.status)ds.append(buat('div','status',d.status+(d.statusTerpotong?'\n\n(STATE.md dipotong di 64 KB)':'')));
   else ds.append(buat('div','alasan',d.statusAlasan||'Status tidak tersedia'));
-  // Checklist NEXT (read-only)
-  const n=Array.isArray(d.next)?d.next:[],sel=n.filter(b=>b.selesai).length;
-  const dn=buat('details');dn.open=lebar;const sm=buat('summary','','NEXT');sm.append(buat('b','',n.length?sel+'/'+n.length+' selesai':'-'));dn.append(sm);
-  if(n.length){const ul=buat('ul','cek');ul.setAttribute('aria-label','Checklist NEXT (baca saja)');
-    n.forEach(b=>{const li=buat('li',b.selesai?'ok':'');li.append(buat('i','',b.selesai?'\u2611':'\u2610'),buat('span','',b.teks));li.setAttribute('aria-label',(b.selesai?'Selesai: ':'Belum: ')+b.teks);ul.append(li);});dn.append(ul);}
-  else dn.append(buat('div','alasan',d.nextAlasan||'Belum ada butir checklist di NEXT.md'));
+  // NEXT (read-only): checklist = x/y selesai; daftar biasa = N butir, tanpa status centang
+  const n=Array.isArray(d.next)?d.next:[],sel=n.filter(b=>b.selesai).length,daf=d.nextJenis==='daftar';
+  const dn=buat('details');dn.open=lebar;const sm=buat('summary','','NEXT');sm.append(buat('b','',!n.length?'-':daf?n.length+' butir':sel+'/'+n.length+' selesai'));dn.append(sm);
+  if(n.length){const ul=buat('ul','cek');ul.setAttribute('aria-label',(daf?'Daftar':'Checklist')+' NEXT (baca saja)');
+    n.forEach(b=>{const li=buat('li',b.selesai?'ok':'');li.append(buat('i','',daf?'\u2022':b.selesai?'\u2611':'\u2610'),buat('span','',b.teks));if(!daf)li.setAttribute('aria-label',(b.selesai?'Selesai: ':'Belum: ')+b.teks);ul.append(li);});dn.append(ul);}
+  else dn.append(buat('div','alasan',d.nextAlasan||'Belum ada butir daftar di NEXT.md'));
   // Link (hanya http/https, tab baru) + buka folder
   const tl=buat('div','tautan');
   const tautan=(teks,u,judul)=>{const h=urlAman(u);if(!h)return;const a=buat('a','btn ghost sm',teks);a.href=h;a.target='_blank';a.rel='noopener noreferrer';a.title=judul||h;tl.append(a);};

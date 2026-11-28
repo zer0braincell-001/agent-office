@@ -612,32 +612,56 @@ function bacaVault(rel) { // rel dibangun server, bukan dari input
 }
 const samarkan = (t) => String(t).replace(/\b(ghp_|gho_|ghu_|ghs_|github_pat_|sk-ant-|sk-|xox[abpr]-|AKIA)[A-Za-z0-9_\-]{8,}/g, '[disamarkan]');
 const barisPolos = (b) => samarkan(teksPolos(b.replace(/^\s*[-*+]\s+/, '').replace(/^\s*>\s?/, '')));
+// Bagian status: setiap heading level 2 yang teksnya diawali "Status" ("## Status", "## Status sekarang",
+// "## Status sekarang (lanjutan)", tidak peka huruf besar/kecil). Lebih dari satu = digabung sesuai urutan file,
+// dengan baris pemisah berisi judul heading-nya. Tiap bagian berhenti di heading level 1-2 berikutnya.
 function bagianStatus(teks) {
-  const baris = teks.split(/\r?\n/);
-  const h = baris.findIndex(b => /^##\s+Status sekarang\s*$/i.test(b.trim()));
-  if (h < 0) return { status: null, alasan: 'Heading "## Status sekarang" tidak ada di STATE.md' };
-  const out = [];
-  for (let i = h + 1; i < baris.length; i++) {
-    const b = baris[i];
-    if (/^#{1,2}\s/.test(b.trim())) break; // heading berikutnya (level 1-2); sub-heading ### ikut sebagai baris
-    if (/^\s*(-{3,}|\*{3,})\s*$/.test(b)) continue;
-    const butir = /^\s*([-*+]|\d+\.)\s+/.test(b), sub = /^#{3,6}\s+/.test(b.trim());
-    const t = barisPolos(sub ? b.trim().replace(/^#+\s+/, '') : b);
-    if (!t) { if (out.length && out[out.length - 1] !== '') out.push(''); continue; }
-    out.push((butir ? '• ' : '') + t);
+  const baris = teks.split(/\r?\n/), bagian = [];
+  for (let h = 0; h < baris.length; h++) {
+    const m = /^##\s+(status.*)$/i.exec(baris[h].trim()); if (!m) continue;
+    const out = [];
+    let i = h + 1;
+    for (; i < baris.length; i++) {
+      const b = baris[i];
+      if (/^#{1,2}\s/.test(b.trim())) break; // heading berikutnya (level 1-2); sub-heading ### ikut sebagai baris
+      if (/^\s*(-{3,}|\*{3,})\s*$/.test(b)) continue;
+      const butir = /^\s*([-*+]|\d+\.)\s+/.test(b), sub = /^#{3,6}\s+/.test(b.trim());
+      const t = barisPolos(sub ? b.trim().replace(/^#+\s+/, '') : b);
+      if (!t) { if (out.length && out[out.length - 1] !== '') out.push(''); continue; }
+      out.push((butir ? '• ' : '') + t);
+    }
+    while (out.length && out[out.length - 1] === '') out.pop();
+    if (out.length) bagian.push({ judul: barisPolos(m[1]), isi: out.join('\n') });
+    h = i - 1;
   }
-  while (out.length && out[out.length - 1] === '') out.pop();
-  const isi = out.join('\n').slice(0, 6000);
-  return isi ? { status: isi, alasan: null } : { status: null, alasan: 'Bagian "Status sekarang" kosong' };
+  if (!bagian.length) return { status: null, alasan: baris.some(b => /^##\s+status/i.test(b.trim())) ? 'Bagian "## Status…" di STATE.md kosong' : 'Tidak ada heading "## Status…" di STATE.md' };
+  const isi = bagian.length === 1 ? bagian[0].isi : bagian.map(x => '── ' + x.judul + ' ──\n' + x.isi).join('\n\n');
+  return { status: isi.slice(0, 6000), alasan: null };
 }
+// NEXT: butir checklist "- [ ]" / "- [x]" (jenis "checklist"). Kalau tidak ada satu pun, butir daftar biasa level
+// atas ("1." / "-" / "*" / "+", tanpa indentasi) jadi jenis "daftar" tanpa status centang. Blok kode dilewati;
+// pada jenis daftar, bagian di bawah heading yang berjudul "Selesai…"/"Done…" dilewati (bukan pekerjaan berikutnya).
 function butirNext(teks) {
-  const out = [];
-  for (const b of teks.split(/\r?\n/)) {
-    const m = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(b); if (!m) continue;
-    const t = barisPolos(m[2].replace(/\\n\s*$/, '')).slice(0, 300); if (!t) continue;
-    out.push({ selesai: m[1] !== ' ', teks: t }); if (out.length >= 200) break;
+  const baris = teks.split(/\r?\n/), cek = [], daftar = [];
+  let kode = false, lewati = false;
+  for (const b of baris) {
+    if (/^\s*(```|~~~)/.test(b)) { kode = !kode; continue; }
+    if (kode) continue;
+    const h = /^#{1,6}\s+(.*)$/.exec(b.trim());
+    if (h) { lewati = /^(selesai|done)\b/i.test(teksPolos(h[1]).trim()); continue; }
+    const m = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(b);
+    if (m) {
+      const t = barisPolos(m[2].replace(/\\n\s*$/, '')).slice(0, 300);
+      if (t && cek.length < 200) cek.push({ selesai: m[1] !== ' ', teks: t });
+      continue;
+    }
+    if (lewati || cek.length || daftar.length >= 200 || /^\s*([-*_]\s*){3,}$/.test(b)) continue;
+    const d = /^ ?(?:[-*+]|\d+[.)])\s+(.*)$/.exec(b);
+    if (d) { const t = barisPolos(d[1]).slice(0, 300); if (t) daftar.push({ selesai: null, teks: t }); }
   }
-  return out;
+  if (cek.length) return { jenis: 'checklist', butir: cek };
+  if (daftar.length) return { jenis: 'daftar', butir: daftar };
+  return { jenis: null, butir: [] };
 }
 // URL live: http(s) apa pun selain github.com, atau domain *.github.io / *.vercel.app tanpa skema.
 function cariLive(...sumber) {
@@ -670,9 +694,9 @@ function detailProyek(slug) {
   if (!p || !/^[a-z0-9][a-z0-9._-]*$/.test(slug) || slug.includes('..')) return null;
   const st = bacaVault(path.join('projects', slug, 'STATE.md'));
   const s = st.ada ? bagianStatus(st.teks) : { status: null, alasan: st.ditolak ? 'STATE.md ditolak (di luar vault)' : 'STATE.md tidak ada' };
-  if (st.ada && !s.status && st.terpotong && /tidak ada/.test(s.alasan)) s.alasan = 'Heading "## Status sekarang" tidak ada di ' + (BATAS_BACA_VAULT / 1024) + ' KB pertama STATE.md (file lebih besar, sisanya tidak dibaca)';
+  if (st.ada && !s.status && st.terpotong && /Tidak ada/.test(s.alasan)) s.alasan = 'Heading "## Status…" tidak ada di ' + (BATAS_BACA_VAULT / 1024) + ' KB pertama STATE.md (file lebih besar, sisanya tidak dibaca)';
   const nx = bacaVault(path.join('projects', slug, 'NEXT.md'));
-  const next = nx.ada ? butirNext(nx.teks) : [];
+  const bn = nx.ada ? butirNext(nx.teks) : { jenis: null, butir: [] };
   const rb = barisRepos(slug);
   let lokal = null, bisaBuka = false, github = null, githubPrivat = false;
   if (rb) {
@@ -687,7 +711,7 @@ function detailProyek(slug) {
   }
   const live = cariLive(rb ? rb.sel.slice(1).join(' ') : '', p.fase, s.status);
   return { slug, nama: p.nama, fase: p.fase, status: s.status, statusAlasan: s.alasan, statusTerpotong: !!st.terpotong,
-    next, nextAlasan: nx.ada ? null : 'NEXT.md tidak ada', lokal, bisaBukaFolder: bisaBuka, github, githubPrivat, live };
+    next: bn.butir, nextJenis: bn.jenis, nextAlasan: nx.ada ? null : 'NEXT.md tidak ada', lokal, bisaBukaFolder: bisaBuka, github, githubPrivat, live };
 }
 // Slug dari URL: decode lalu cocokkan ke whitelist. Traversal (.., %2e, %2f, \) di URL mentah = 403.
 function slugProyek(req, p) {
