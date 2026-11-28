@@ -202,7 +202,10 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
     // Jalankan (ruang.mode 'kerja'): alat staf tanpa Bash; dontAsk = yang tidak ada di --allowedTools otomatis DITOLAK;
     // Edit/Write hanya di dalam worktree; --setting-sources user = izin/hook dari .claude/ repo tidak dimuat.
     const kerja = ruang && ruang.mode === 'kerja';
-    const argAlat = kerja ? ['--tools', ALAT_JALAN.join(','), '--allowedTools', ruang.izin.join(','), '--permission-mode', 'dontAsk',
+    const setFile = kerja ? path.join(os.tmpdir(), 'kantor-set-' + uid() + '.json') : null;
+    if (setFile) fs.writeFileSync(setFile, JSON.stringify(SETELAN_JALAN));
+    const argAlat = kerja ? ['--tools', ALAT_JALAN.join(','), '--allowedTools', ruang.izin.join(','), '--disallowedTools', ruang.tolak.join(','),
+        '--permission-mode', 'dontAsk', '--settings', setFile,
         '--setting-sources', 'user', '--disable-slash-commands', '--no-session-persistence'].concat(ruang.budget > 0 ? ['--max-budget-usd', String(ruang.budget)] : [])
       : ruang ? ['--tools', '', '--disable-slash-commands', '--no-session-persistence']
       : daftarAlat ? ['--tools', daftarAlat, '--allowedTools', daftarAlat, '--permission-mode', 'acceptEdits']
@@ -264,7 +267,7 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
     child.stderr.on('data', d => { errBuf += d; });
     child.on('error', e => { out.error = 'Tidak bisa menjalankan "' + CFG.perintahClaude + '": ' + e.message; });
     child.on('close', code => {
-      running.delete(key); fs.unlink(sysFile, () => {});
+      running.delete(key); fs.unlink(sysFile, () => {}); if (setFile) fs.unlink(setFile, () => {});
       if (!adaResult) catatSesi(Object.assign(dasarSesi(), { subtype: 'tanpa-result', exitCode: code, session_id: out.session,
         stream: Object.assign(jumlahStream(usagePesan, nEventAssistant), { model: [...modelStream] }) }));
       if (!out.error && code !== 0 && !out.text) out.error = (errBuf.trim().split('\n').pop() || ('keluar dengan kode ' + code));
@@ -1090,9 +1093,23 @@ const DIR_JALAN = path.join(DIR_RUANG, 'jalan');
 const STATUS_AKTIF = ['antre', 'jalan'];
 const folderWorktree = () => CFG.folderWorktree ? path.resolve(CFG.folderWorktree) : path.join(path.dirname(path.resolve(CFG.folderData)), 'worktree');
 const batasJalankan = () => { const b = +CFG.batasJalankan; return b > 0 ? b : 0; };
-// Path absolut gaya POSIX untuk aturan izin Claude Code (Windows: C:\a\b -> //c/a/b).
-const polaAbs = (dir) => { const p = path.resolve(dir).replace(/\\/g, '/'); return '/' + (/^[A-Za-z]:/.test(p) ? '/' + p[0].toLowerCase() + p.slice(2) : p); };
-const izinJalan = (wt) => ['Read', 'Glob', 'Grep', 'Edit(./**)', 'Write(./**)', 'Edit(' + polaAbs(wt) + '/**)', 'Write(' + polaAbs(wt) + '/**)'];
+/* Izin agen Jalankan (docs permissions Claude Code):
+   - "On Windows, paths are normalized to POSIX form before matching. C:\Users\alice becomes /c/Users/alice";
+     "//path" = absolut dari root. Pola dibangun dari REALPATH worktree nyata, huruf drive apa pun (D:\x -> //d/x).
+   - Read(...) berlaku juga untuk Glob/Grep; Glob(...)/Grep(...) dan Write(...) dengan path TIDAK dicocokkan, jadi
+     tulis dibatasi lewat Edit(...) ("Edit rules apply to all built-in tools that edit files").
+   - allow: baca + tulis HANYA di worktree. Read/Glob/Grep TIDAK diberi izin tanpa path (dulu: baca di mana saja).
+   - deny (dievaluasi lebih dulu dari allow): kredensial di mana pun + file .git worktree.
+   - setelan keras: file tools menolak baca/tulis di luar working directory (v2.1.314+). */
+function polaAbs(dir) {
+  let p; try { p = fs.realpathSync.native(dir); } catch (e) { p = path.resolve(dir); }
+  p = p.replace(/\\/g, '/').replace(/\/+$/, '');
+  const m = /^([A-Za-z]):(\/.*)?$/.exec(p);
+  return '/' + (m ? '/' + m[1].toLowerCase() + (m[2] || '') : p);
+}
+const izinJalan = (wt) => { const a = polaAbs(wt) + '/**'; return ['Read(./**)', 'Read(' + a + ')', 'Edit(./**)', 'Edit(' + a + ')']; };
+const tolakJalan = () => ['Read(//**/.credentials.json)', 'Read(//**/.env)', 'Edit(./.git)', 'Edit(./.git/**)', 'Edit(//**/.git/**)'];
+const SETELAN_JALAN = { permissions: { blockReadsOutsideWorkingDirectories: true, blockWritesOutsideWorkingDirectories: true } };
 // git lewat spawn TANPA shell (argumen array). Keluaran dibatasi; timeout = dibunuh.
 function git(args, opsi = {}) {
   return new Promise((resolve) => {
@@ -1187,7 +1204,8 @@ async function buatJalankan(slug, t, blok, id, siapa) {
   const base = (await git(['-C', c.repo, 'rev-parse', 'HEAD'])).out.trim();
   const add = await git(['-C', c.repo, 'worktree', 'add', wt, '-b', branch, base]);
   if (add.code !== 0) return { kode: 500, error: 'git worktree add gagal: ' + pesanGit(add) };
-  const run = { id, slug, status: 'antre', repo: c.repo, asal: c.asal, base, branch, wt, prompt: c.prompt, batas: c.batas, biaya: 0, t0: Date.now(), dari: t };
+  let gitFile = null; try { gitFile = fs.readFileSync(path.join(wt, '.git'), 'utf8'); } catch (e) {}
+  const run = { id, slug, status: 'antre', repo: c.repo, asal: c.asal, base, branch, wt, gitFile, izin: izinJalan(wt), prompt: c.prompt, batas: c.batas, biaya: 0, t0: Date.now(), dari: t };
   const d = bacaRun(slug); d.push(run); simpanRun(slug, d);
   ubahPesanAgen(slug, id, () => {});
   catatLogRuang(Object.assign({ aksi: 'jalankan', slug, run: id, branch, repo: c.repo, asal: c.asal, base: base.slice(0, 7) }, siapa));
@@ -1211,13 +1229,17 @@ async function kerjakanRun(slug, id) {
   const p = bacaProyek().proyek.find(x => x.slug === slug) || { nama: slug };
   const sesi = { slug, jalan: id };
   const r = await runClaude({ key: 'jalan:' + slug, w: null, akun: 0, model: CFG.model.staf, maxTurns: MAX_TURNS_JALAN, peran: 'jalan',
-    system: sistemJalan(p.nama, r0.wt), prompt: r0.prompt, ruang: { mode: 'kerja', cwd: r0.wt, sesi, izin: izinJalan(r0.wt), budget: r0.batas },
+    system: sistemJalan(p.nama, r0.wt), prompt: r0.prompt, ruang: { mode: 'kerja', cwd: r0.wt, sesi, izin: izinJalan(r0.wt), tolak: tolakJalan(), budget: r0.batas },
     onEvent: (ev) => { if (ev.alat) { hidup.langkah++; hidup.aktivitas = ev.alat + (ev.file ? ' ' + path.basename(String(ev.file)) : ''); } } });
   hidup.aktivitas = 'commit';
   // Commit semua perubahan di worktree (selesai maupun berhenti). Tanpa push.
   let commit = null, numstat = [], galatCommit = null;
-  const addA = await git(['-C', r0.wt, 'add', '-A']);
-  if (addA.code !== 0) galatCommit = 'git add gagal: ' + pesanGit(addA);
+  // Penjaga: file .git worktree (penunjuk gitdir) harus persis seperti saat dibuat. Kalau diubah, git di worktree bisa
+  // diarahkan ke repo/branch lain (mis. working tree user). Commit dibatalkan, worktree dibiarkan untuk diperiksa/Buang.
+  let gitSekarang = null; try { const ls = fs.lstatSync(path.join(r0.wt, '.git')); if (ls.isFile() && !ls.isSymbolicLink()) gitSekarang = fs.readFileSync(path.join(r0.wt, '.git'), 'utf8'); } catch (e) {}
+  const addA = r0.gitFile && gitSekarang === r0.gitFile ? await git(['-C', r0.wt, 'add', '-A']) : null;
+  if (!addA) galatCommit = 'File .git worktree berubah atau hilang; commit dibatalkan. Periksa worktree lalu Buang.';
+  else if (addA.code !== 0) galatCommit = 'git add gagal: ' + pesanGit(addA);
   else if ((await git(['-C', r0.wt, 'diff', '--cached', '--quiet'])).code === 1) {
     const cm = await git(['-C', r0.wt, '-c', 'user.name=Agen Kantor', '-c', 'user.email=agen-kantor@localhost', 'commit', '-q', '-m', 'agen: ' + ringkasPrompt(r0.prompt)]);
     if (cm.code !== 0) galatCommit = 'git commit gagal: ' + pesanGit(cm);
@@ -1230,7 +1252,7 @@ async function kerjakanRun(slug, id) {
     }
   }
   const ak = r.login && infoAkun(0);
-  const status = hidup.henti ? 'dihentikan' : r.login || r.error ? 'gagal' : 'selesai';
+  const status = hidup.henti ? 'dihentikan' : r.login || r.error || !addA ? 'gagal' : 'selesai';
   const galat = [ak ? 'Akun agen belum login: ' + ak.nama + ' (' + ak.configDir + '). Login: $env:CLAUDE_CONFIG_DIR="' + ak.configDir + '"; claude lalu /login.' : null,
     !hidup.henti && r.error && !r.login ? r.error : null, galatCommit].filter(Boolean).join(' · ') || null;
   const penolakan = (r.penolakan || []).slice(0, 20).map(x => ({ alat: x.tool_name, file: x.tool_input && (x.tool_input.file_path || x.tool_input.path || x.tool_input.pattern) || null }));
@@ -1251,6 +1273,16 @@ function hentikanRun(slug, id, siapa) {
 }
 async function bersihkanRun(r, hapusBranch) { // worktree remove + (opsional) branch -D; kembalikan daftar galat
   const g = [];
+  // .git worktree diubah agen (penjaga commit) -> git menolak 'worktree remove'. Pulihkan dulu dari isi saat dibuat.
+  // Di Windows file .git ber-atribut hidden: tulis lewat 'r+' (mode 'w' gagal EPERM pada file hidden).
+  if (r.gitFile && fs.existsSync(r.wt)) {
+    const p = path.join(r.wt, '.git'); let kini = null; try { kini = fs.readFileSync(p, 'utf8'); } catch (e) {}
+    if (kini !== r.gitFile) {
+      try { const ls = fs.lstatSync(p); if (ls.isSymbolicLink() || ls.isDirectory()) fs.rmSync(p, { recursive: true, force: true }); } catch (e) {}
+      try { const b = Buffer.from(r.gitFile, 'utf8'); let fd; try { fd = fs.openSync(p, 'r+'); } catch (e) { fd = fs.openSync(p, 'w'); } fs.ftruncateSync(fd, 0); fs.writeSync(fd, b, 0, b.length, 0); fs.closeSync(fd); }
+      catch (e) { g.push('pulihkan .git: ' + e.message); }
+    }
+  }
   if (fs.existsSync(r.wt)) { const rm = await git(['-C', r.repo, 'worktree', 'remove', '--force', r.wt]); if (rm.code !== 0) g.push('worktree remove: ' + pesanGit(rm)); }
   await git(['-C', r.repo, 'worktree', 'prune']);
   if (hapusBranch) { const b = await git(['-C', r.repo, 'branch', hapusBranch, r.branch]); if (b.code !== 0) g.push('branch ' + hapusBranch + ': ' + pesanGit(b)); }
