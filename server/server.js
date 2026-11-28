@@ -577,6 +577,126 @@ function bacaProyek() {
   return hasil;
 }
 
+/* ---------------- /api/proyek/<slug>/detail: detail proyek baca-saja (ruang proyek, langkah 1) ----------------
+   Slug hanya dari daftar INDEX yang sudah di-parse (whitelist). Path dibangun dari folder vault (dirname indexVault),
+   tidak pernah dari input. Hanya 3 file yang dibaca: projects/<slug>/STATE.md (bagian "## Status sekarang"),
+   projects/<slug>/NEXT.md (butir checklist), repos.md (baris proyek itu: path lokal, remote GitHub, link live).
+   Read-only, maks 64 KB per file, cache per mtime+ukuran. Kolom Catatan repos.md tidak pernah dikirim mentah: hanya
+   URL live yang diekstrak. Pola token umum disamarkan untuk berjaga-jaga. */
+const BATAS_BACA_VAULT = 64 * 1024;
+const CACHE_VAULT = new Map(); // path -> { kunci, teks, terpotong }
+const sama = (a, b) => process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+const diDalam = (root, full) => { const r = root.endsWith(path.sep) ? root : root + path.sep; return process.platform === 'win32' ? full.toLowerCase().startsWith(r.toLowerCase()) : full.startsWith(r); };
+function folderVault() { return CFG.indexVault ? path.dirname(path.resolve(CFG.indexVault)) : ''; }
+// Path absolut di dalam vault (realpath, menolak symlink/junction keluar vault); null = ditolak, undefined = tidak ada.
+function dalamVault(full) {
+  const root = folderVault(); if (!root) return null;
+  let rRoot, rFull; try { rRoot = fs.realpathSync.native(root); } catch (e) { return null; }
+  try { rFull = fs.realpathSync.native(full); } catch (e) { return undefined; }
+  return diDalam(rRoot, rFull) && !sama(rRoot, rFull) ? rFull : null;
+}
+function bacaVault(rel) { // rel dibangun server, bukan dari input
+  const full = dalamVault(path.join(folderVault(), rel));
+  if (full === undefined) return { ada: false };
+  if (full === null) return { ada: false, ditolak: true };
+  let st; try { st = fs.statSync(full); } catch (e) { return { ada: false }; }
+  if (!st.isFile()) return { ada: false };
+  const kunci = st.mtimeMs + '|' + st.size, c = CACHE_VAULT.get(full);
+  if (c && c.kunci === kunci) return c;
+  let teks = '', terpotong = st.size > BATAS_BACA_VAULT;
+  try { const fd = fs.openSync(full, 'r'); try { const buf = Buffer.alloc(Math.min(st.size, BATAS_BACA_VAULT)); const n = fs.readSync(fd, buf, 0, buf.length, 0); teks = buf.slice(0, n).toString('utf8'); } finally { fs.closeSync(fd); } }
+  catch (e) { return { ada: false }; }
+  const hasil = { ada: true, kunci, teks: teks.replace(/^﻿/, ''), terpotong };
+  CACHE_VAULT.set(full, hasil); if (CACHE_VAULT.size > 200) CACHE_VAULT.delete(CACHE_VAULT.keys().next().value);
+  return hasil;
+}
+const samarkan = (t) => String(t).replace(/\b(ghp_|gho_|ghu_|ghs_|github_pat_|sk-ant-|sk-|xox[abpr]-|AKIA)[A-Za-z0-9_\-]{8,}/g, '[disamarkan]');
+const barisPolos = (b) => samarkan(teksPolos(b.replace(/^\s*[-*+]\s+/, '').replace(/^\s*>\s?/, '')));
+function bagianStatus(teks) {
+  const baris = teks.split(/\r?\n/);
+  const h = baris.findIndex(b => /^##\s+Status sekarang\s*$/i.test(b.trim()));
+  if (h < 0) return { status: null, alasan: 'Heading "## Status sekarang" tidak ada di STATE.md' };
+  const out = [];
+  for (let i = h + 1; i < baris.length; i++) {
+    const b = baris[i];
+    if (/^#{1,2}\s/.test(b.trim())) break; // heading berikutnya (level 1-2); sub-heading ### ikut sebagai baris
+    if (/^\s*(-{3,}|\*{3,})\s*$/.test(b)) continue;
+    const butir = /^\s*([-*+]|\d+\.)\s+/.test(b), sub = /^#{3,6}\s+/.test(b.trim());
+    const t = barisPolos(sub ? b.trim().replace(/^#+\s+/, '') : b);
+    if (!t) { if (out.length && out[out.length - 1] !== '') out.push(''); continue; }
+    out.push((butir ? '• ' : '') + t);
+  }
+  while (out.length && out[out.length - 1] === '') out.pop();
+  const isi = out.join('\n').slice(0, 6000);
+  return isi ? { status: isi, alasan: null } : { status: null, alasan: 'Bagian "Status sekarang" kosong' };
+}
+function butirNext(teks) {
+  const out = [];
+  for (const b of teks.split(/\r?\n/)) {
+    const m = /^\s*[-*+]\s+\[([ xX])\]\s+(.*)$/.exec(b); if (!m) continue;
+    const t = barisPolos(m[2].replace(/\\n\s*$/, '')).slice(0, 300); if (!t) continue;
+    out.push({ selesai: m[1] !== ' ', teks: t }); if (out.length >= 200) break;
+  }
+  return out;
+}
+// URL live: http(s) apa pun selain github.com, atau domain *.github.io / *.vercel.app tanpa skema.
+function cariLive(...sumber) {
+  for (const t of sumber) {
+    const teks = String(t || '');
+    const cocok = teks.match(/https?:\/\/[^\s)<>\]"'`|]+|\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9-]+)*\.(?:github\.io|vercel\.app)(?:\/[^\s)<>\]"'`|]*)?/gi) || [];
+    for (let c of cocok) {
+      c = c.replace(/[.,;:!?]+$/, ''); if (!/^https?:\/\//i.test(c)) c = 'https://' + c;
+      let u; try { u = new URL(c); } catch (e) { continue; }
+      if (!/^https?:$/.test(u.protocol) || /(^|\.)github\.com$/i.test(u.hostname)) continue;
+      return u.href;
+    }
+  }
+  return null;
+}
+function barisRepos(slug) {
+  const r = bacaVault('repos.md'); if (!r.ada) return null;
+  const baris = r.teks.split(/\r?\n/).filter(b => b.trim().startsWith('|'));
+  if (baris.length < 2) return null;
+  const kepala = selTabel(baris[0]).map(c => teksPolos(c).toLowerCase());
+  const kLokal = kepala.findIndex(c => c.includes('path') || c.includes('lokal')), kRemote = kepala.findIndex(c => c.includes('remote'));
+  for (const b of baris.slice(1)) {
+    const c = selTabel(b);
+    if (teksPolos(c[0]).toLowerCase() === slug) return { sel: c, kLokal, kRemote };
+  }
+  return null;
+}
+function detailProyek(slug) {
+  const p = bacaProyek().proyek.find(x => x.slug === slug);
+  if (!p || !/^[a-z0-9][a-z0-9._-]*$/.test(slug) || slug.includes('..')) return null;
+  const st = bacaVault(path.join('projects', slug, 'STATE.md'));
+  const s = st.ada ? bagianStatus(st.teks) : { status: null, alasan: st.ditolak ? 'STATE.md ditolak (di luar vault)' : 'STATE.md tidak ada' };
+  if (st.ada && !s.status && st.terpotong && /tidak ada/.test(s.alasan)) s.alasan = 'Heading "## Status sekarang" tidak ada di ' + (BATAS_BACA_VAULT / 1024) + ' KB pertama STATE.md (file lebih besar, sisanya tidak dibaca)';
+  const nx = bacaVault(path.join('projects', slug, 'NEXT.md'));
+  const next = nx.ada ? butirNext(nx.teks) : [];
+  const rb = barisRepos(slug);
+  let lokal = null, bisaBuka = false, github = null, githubPrivat = false;
+  if (rb) {
+    const mentah = rb.kLokal >= 0 ? String(rb.sel[rb.kLokal] || '').replace(/`/g, '').trim() : '';
+    if (mentah && !/[<>]/.test(mentah) && !mentah.includes('\0')) {
+      lokal = path.isAbsolute(mentah) || /^[a-zA-Z]:[\\/]/.test(mentah) ? path.resolve(mentah) : path.resolve(folderVault(), mentah);
+      const d = dalamVault(lokal); try { bisaBuka = !!d && fs.statSync(d).isDirectory(); } catch (e) {}
+    }
+    const remote = rb.kRemote >= 0 ? String(rb.sel[rb.kRemote] || '') : '';
+    const g = /(?:https?:\/\/)?github\.com\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)/i.exec(remote);
+    if (g) { github = 'https://github.com/' + g[1] + '/' + g[2].replace(/\.git$/i, ''); githubPrivat = /\(\s*private\s*\)/i.test(remote); }
+  }
+  const live = cariLive(rb ? rb.sel.slice(1).join(' ') : '', p.fase, s.status);
+  return { slug, nama: p.nama, fase: p.fase, status: s.status, statusAlasan: s.alasan, statusTerpotong: !!st.terpotong,
+    next, nextAlasan: nx.ada ? null : 'NEXT.md tidak ada', lokal, bisaBukaFolder: bisaBuka, github, githubPrivat, live };
+}
+// Slug dari URL: decode lalu cocokkan ke whitelist. Traversal (.., %2e, %2f, \) di URL mentah = 403.
+function slugProyek(req, p) {
+  const mentah = req.url.split('?')[0];
+  if (/\.\.|%2e|%2f|%5c|\\/i.test(mentah)) return { kode: 403 };
+  let s; try { s = decodeURIComponent(p[2] || ''); } catch (e) { return { kode: 400 }; }
+  return bacaProyek().proyek.some(x => x.slug === s) ? { slug: s } : { kode: 404 };
+}
+
 /* ---------------- /aset: model & tekstur web (Fase 3a), publik baca-saja ----------------
    Hanya folder <repo>/aset. Tanpa PIN (isinya aset CC0 yang memang ada di repo publik). Path dicek dari URL mentah
    lewat dalamFolder (tolak .., absolut, drive, symlink/junction keluar folder). */
@@ -607,6 +727,8 @@ http.createServer(async (req, res) => {
     // Dicek dari URL mentah: parser URL melipat "../" dan "%2e%2e" sebelum sampai sini.
     if (/^\/hasil(\/|\?|$)/.test(req.url)) { if (req.method !== 'GET') return tolakHasil(res, 405, 'Pakai GET'); return sajikanHasil(req, res, pinOk); }
     if (p[0] !== 'api') { res.writeHead(404); return res.end('Tidak ada'); }
+    // Dot-segment di URL mentah (../, %2e%2e) dilipat parser URL ke rute lain; tolak saja daripada diarahkan diam-diam.
+    if (/(^|\/)(\.|%2e){2}(\/|\?|$)/i.test(req.url.split('?')[0])) return send(res, 403, { error: 'Ditolak: path tidak valid' });
     // API hanya dari halaman server sendiri (web kantor/dasbor = same-origin) atau URL yang diketik langsung.
     // Halaman hasil (origin opaque → Origin: null, Sec-Fetch-Site: cross-site) dan situs lain ditolak, termasuk
     // percobaan menebak PIN lewat fetch/img/form.
@@ -618,7 +740,21 @@ http.createServer(async (req, res) => {
     if (p[1] === 'state') return send(res, 200, JSON.parse(snapshot()));
     if (req.method === 'GET' && p[1] === 'usage') return send(res, 200, await usage.ringkasan(CFG));
     if (req.method === 'GET' && p[1] === 'projects') return send(res, 200, usage.proyek(CFG));
-    if (req.method === 'GET' && p[1] === 'proyek') return send(res, 200, bacaProyek());
+    if (req.method === 'GET' && p[1] === 'proyek' && !p[2]) return send(res, 200, bacaProyek());
+    if (p[1] === 'proyek' && p[2]) {
+      const benar = (p[3] === 'detail' && req.method === 'GET') || (p[3] === 'buka-folder' && req.method === 'POST');
+      if (!benar || p[4]) return send(res, 404, { error: 'Tidak ada' });
+      const sl = slugProyek(req, p);
+      if (!sl.slug) return send(res, sl.kode, { error: sl.kode === 403 ? 'Ditolak: path tidak valid' : sl.kode === 400 ? 'Slug tidak valid' : 'Proyek tidak ada di INDEX' });
+      const d = detailProyek(sl.slug); if (!d) return send(res, 404, { error: 'Proyek tidak ada di INDEX' });
+      if (p[3] === 'detail') return send(res, 200, d);
+      if (!d.lokal) return send(res, 404, { error: 'Path lokal proyek belum tercatat di repos.md' });
+      if (!d.bisaBukaFolder) return send(res, 403, { error: 'Folder tidak ada atau di luar folder vault: ' + d.lokal });
+      if (process.platform !== 'win32') return send(res, 501, { error: 'Buka folder hanya di Windows. Folder: ' + d.lokal });
+      const dir = dalamVault(d.lokal); if (!dir) return send(res, 403, { error: 'Folder di luar folder vault' });
+      spawn('explorer.exe', [dir], { detached: true, stdio: 'ignore', windowsHide: false }).on('error', () => {}).unref();
+      return send(res, 200, { ok: true, pesan: 'Folder dibuka di laptop (jendela Explorer): ' + dir });
+    }
     if (p[1] === 'events') { res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-cache', connection: 'keep-alive' }); res.write('data: ' + snapshot() + '\n\n'); clients.add(res); req.on('close', () => clients.delete(res)); return; }
     if (req.method === 'GET' && p[1] === 'ws' && p[3] === 'files' && !p[4]) {
       const w = S.ws.find(x => x.id === p[2]); if (!w) return send(res, 404, { error: 'Workspace tidak ditemukan' });
