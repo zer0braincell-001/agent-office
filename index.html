@@ -42,6 +42,16 @@ button{cursor:pointer}
   padding-top:calc(10px + env(safe-area-inset-top,0px));padding-bottom:10px;
   padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));pointer-events:none}
 .top>*{pointer-events:auto}
+:root{--atas:62px} /* tepi atas panel; bertambah saat banner login tampil */
+/* Banner login (2a-2i): tampil di semua mode (Kantor, Lorong, ruang proyek), untuk workspace mana pun */
+.loginbar{position:fixed;z-index:6;left:max(16px,env(safe-area-inset-left,0px));right:max(16px,env(safe-area-inset-right,0px));top:calc(58px + env(safe-area-inset-top,0px));display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;padding:6px 8px 6px 12px;border-radius:12px;font-size:12.5px;line-height:1.4;color:var(--fg);background:color-mix(in srgb,var(--bad) 13%,var(--panel-solid));border:1px solid color-mix(in srgb,var(--bad) 45%,var(--line));box-shadow:0 6px 20px rgba(0,0,0,.12)}
+.loginbar .t{flex:1 1 240px;min-width:0;overflow-wrap:anywhere}
+.loginbar .t b{color:var(--bad);font-weight:700}
+.loginbar .aksi{display:flex;flex-wrap:wrap;gap:6px}
+.loginbar .btn.sm{height:28px;padding:0 10px;font-size:12px}
+.loginbar .cara{flex-basis:100%;display:grid;gap:3px;font-size:12px;color:var(--muted)}
+.loginbar code{font-family:var(--f-mono);font-size:11.5px;color:var(--fg);overflow-wrap:anywhere}
+@media (max-width:899px){.loginbar{padding:6px 8px 6px 10px;gap:5px 8px}.loginbar .lagi{display:none}.loginbar .aksi{gap:4px}.loginbar .btn.sm{padding:0 8px;font-size:11.5px}}
 .brand{font-family:var(--f-display);font-weight:700;font-size:15px;letter-spacing:-.01em;padding:8px 12px;border-radius:12px;white-space:nowrap;display:flex;align-items:center;gap:8px}
 .brand i{width:10px;height:10px;border-radius:3px;background:var(--mg);display:inline-block;transform:rotate(45deg)}
 .wstabs{display:flex;gap:6px;overflow-x:auto;scrollbar-width:none;min-width:0;flex:1;padding:2px}
@@ -57,7 +67,7 @@ button{cursor:pointer}
 .iconbtn{flex:none;width:36px;height:36px;border-radius:12px;border:1px solid var(--line);background:var(--panel);display:grid;place-items:center;font-size:20px;line-height:1}
 
 /* HUD proyek */
-.hud{position:fixed;z-index:4;left:max(16px,env(safe-area-inset-left,0px));top:calc(62px + env(safe-area-inset-top,0px));width:min(340px,calc(100% - 32px));border-radius:var(--r);padding:12px 14px;display:grid;gap:8px}
+.hud{position:fixed;z-index:4;left:max(16px,env(safe-area-inset-left,0px));top:calc(var(--atas) + env(safe-area-inset-top,0px));width:min(340px,calc(100% - 32px));border-radius:var(--r);padding:12px 14px;display:grid;gap:8px}
 .hud h1{margin:0;font-family:var(--f-display);font-size:16px;font-weight:600;letter-spacing:-.01em;text-wrap:balance}
 .hud .goal{color:var(--muted);font-size:12.5px;line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
@@ -101,7 +111,7 @@ textarea.grow{min-height:42px;max-height:40vh;overflow-y:auto}
 .btn.sm{height:32px;padding:0 12px;font-size:12.5px;border-radius:10px}
 .btn:disabled{opacity:.5;cursor:default}
 @media (min-width:900px){
-  .sheet,.sheet.min{left:auto;top:calc(62px + env(safe-area-inset-top,0px));right:max(16px,env(safe-area-inset-right,0px));bottom:16px;width:390px;height:auto;max-height:none;border-radius:18px}
+  .sheet,.sheet.min{left:auto;top:calc(var(--atas) + env(safe-area-inset-top,0px));right:max(16px,env(safe-area-inset-right,0px));bottom:16px;width:390px;height:auto;max-height:none;border-radius:18px}
   .sheet.min .panes{display:block}
   .handle{display:none}
 }
@@ -140,9 +150,9 @@ button.card:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
 .modal .box{width:min(640px,100%);max-height:80vh;overflow:auto;border-radius:18px;background:var(--panel-solid);padding:18px;display:grid;gap:10px;margin-bottom:env(safe-area-inset-bottom,0px)}
 .modal h2{margin:0;font-family:var(--f-display);font-size:17px;text-wrap:balance}
 .out{white-space:pre-wrap;font-size:13px;line-height:1.55;background:var(--chip);border-radius:12px;padding:12px;overflow-wrap:anywhere}
-.toast{position:fixed;z-index:7;left:50%;transform:translateX(-50%);top:calc(64px + env(safe-area-inset-top,0px));border-radius:12px;padding:9px 14px;font-size:13px;font-weight:500;max-width:calc(100% - 32px)}
+.toast{position:fixed;z-index:7;left:50%;transform:translateX(-50%);top:calc(var(--atas) + 2px + env(safe-area-inset-top,0px));border-radius:12px;padding:9px 14px;font-size:13px;font-weight:500;max-width:calc(100% - 32px)}
 @media (max-width:899px){.toast{top:auto;bottom:calc(64% + 8px)}}
-.sel{position:fixed;z-index:4;right:max(16px,env(safe-area-inset-right,0px));top:calc(62px + env(safe-area-inset-top,0px));width:min(260px,calc(100% - 32px));border-radius:var(--r);padding:12px;display:grid;gap:6px}
+.sel{position:fixed;z-index:4;right:max(16px,env(safe-area-inset-right,0px));top:calc(var(--atas) + env(safe-area-inset-top,0px));width:min(260px,calc(100% - 32px));border-radius:var(--r);padding:12px;display:grid;gap:6px}
 @media (min-width:900px){.sel{right:calc(420px + env(safe-area-inset-right,0px))}}
 @media (max-width:899px){.sel{top:auto;bottom:calc(62% + 10px)} .hud{width:min(300px,calc(100% - 32px))}}
 .camctl{position:fixed;z-index:4;left:max(16px,env(safe-area-inset-left,0px));bottom:16px;display:flex;gap:2px;padding:3px;border-radius:12px}
@@ -153,7 +163,7 @@ button.card:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
 .ruang .isi{font-size:13px;line-height:1.5;overflow-wrap:anywhere}
 .di-ruang .sel:not(.ruang){display:none!important}
 .zona-proyek .hud{display:none}
-.cari{position:fixed;z-index:5;left:max(16px,env(safe-area-inset-left,0px));top:calc(62px + env(safe-area-inset-top,0px));width:min(340px,calc(100% - 32px));box-sizing:border-box;border-radius:var(--r);padding:8px;display:none;gap:6px}
+.cari{position:fixed;z-index:5;left:max(16px,env(safe-area-inset-left,0px));top:calc(var(--atas) + env(safe-area-inset-top,0px));width:min(340px,calc(100% - 32px));box-sizing:border-box;border-radius:var(--r);padding:8px;display:none;gap:6px}
 .zona-lorong .cari{display:grid}
 .cari .kotak{display:flex;align-items:center;gap:8px;height:38px;padding:0 6px 0 10px;border-radius:10px;background:var(--panel-solid);border:1px solid var(--line)}
 .cari .kotak:focus-within{border-color:var(--accent)}
@@ -190,6 +200,7 @@ button.card:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
   <button class="iconbtn glass" id="addWs" aria-label="Workspace baru" title="Workspace baru">+</button>
 </header>
 
+<div class="loginbar" id="loginbar" role="alert" hidden></div>
 <section class="hud glass" id="hud" aria-live="polite"></section>
 <section class="sel glass" id="sel" hidden></section>
 <section class="sel ruang glass" id="ruang" hidden aria-live="polite"></section>
@@ -1270,6 +1281,41 @@ function renderBriefMode(){
   document.querySelectorAll('[data-bmode]').forEach(b=>b.setAttribute('aria-pressed',b.dataset.bmode===briefMode));
   if(BR.on)$('brief').placeholder=briefMode==='solo'?'Brief untuk 1 agen, mis. "Tulis 3 tips merapikan meja di catatan.md"':'Brief untuk Manajer, mis. "Bikin landing page toko kue + form pesanan"';
 }
+/* Banner login: peringatan start (.credentials.json tak ada) + workspace mana pun yang butuh-login. Dibangun ulang hanya
+   bila isinya berubah (DOM + textContent). Aksi: Sudah login, lanjutkan (semua workspace yang menunggu), Ke workspace
+   (Kantor + workspace itu, kartunya berisi petunjuk lengkap), Cara login (perintah per akun). */
+let caraLoginBuka=false;
+function renderLogin(){
+  const el=$('loginbar'),butuh=BR.on?S.ws.filter(w=>w.status==='butuh-login'):[],pl=BR.on?((BR.info||{}).peringatanLogin||[]):[];
+  const sig=JSON.stringify([butuh.map(w=>[w.id,w.nama,w.loginAkun]),pl]);if(el.dataset.sig===sig)return;el.dataset.sig=sig;
+  el.replaceChildren();
+  if(!butuh.length&&!pl.length){el.hidden=true;aturAtas();return;}
+  const buat=(tag,cls,teks)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(teks!=null)e.textContent=teks;return e;};
+  const t=buat('div','t'),aksi=buat('div','aksi');
+  const akunDi=butuh.length?butuh.map(w=>w.loginAkun||{}):pl,akun=[...new Map(akunDi.filter(a=>a.configDir||a.nama).map(a=>[a.configDir||a.nama,a])).values()];
+  const nm=akun.map(a=>a.nama).filter(Boolean).join(', ');
+  if(butuh.length){
+    t.append(buat('b','','Akun agen belum login'+(nm?': '+nm:'')),' · '+(butuh.length===1?'"'+butuh[0].nama+'" menunggu login.':butuh.length+' workspace menunggu: '+butuh.map(w=>'"'+w.nama+'"').join(', ')+'.'),
+      buat('span','lagi',' Tugas tetap di antrean, tidak ada panggilan Claude baru.'));
+    const lanjut=buat('button','btn sm','Sudah login, lanjutkan');lanjut.type='button';
+    lanjut.addEventListener('click',()=>{lanjut.disabled=true;Promise.all(butuh.map(w=>api('ws/'+w.id+'/lanjut-login',{}))).then(()=>toast('Dilanjutkan')).catch(e=>{lanjut.disabled=false;toast(e.message,true);});});
+    const ke=buat('button','btn ghost sm',butuh.length===1?'Ke workspace':'Ke workspace pertama');ke.type='button';ke.title='Buka Kantor dengan workspace yang menunggu login';
+    ke.addEventListener('click',()=>keWorkspace(butuh[0].id));
+    aksi.append(lanjut,ke);
+  }else t.append(buat('b','','Akun agen mungkin belum login'+(nm?': '+nm:'')),buat('span','lagi',' · .credentials.json tidak ada di configDir. Dicek lagi saat agen jalan.'));
+  const cara=buat('div','cara');cara.hidden=!caraLoginBuka;
+  akun.forEach(a=>{const r=buat('div','');r.append((a.nama?a.nama+': ':'')+'PowerShell laptop ',buat('code','','$env:CLAUDE_CONFIG_DIR="'+(a.configDir||'')+'"; claude'),' lalu ketik ',buat('code','','/login'));cara.append(r);});
+  const tc=buat('button','btn ghost sm',caraLoginBuka?'Tutup cara':'Cara login');tc.type='button';tc.setAttribute('aria-expanded',String(caraLoginBuka));
+  tc.addEventListener('click',()=>{caraLoginBuka=!caraLoginBuka;cara.hidden=!caraLoginBuka;tc.textContent=caraLoginBuka?'Tutup cara':'Cara login';tc.setAttribute('aria-expanded',String(caraLoginBuka));aturAtas();});
+  aksi.append(tc);el.append(t,aksi,cara);el.hidden=false;aturAtas();
+}
+// Panel atas (kartu workspace, cari, panel kanan, toast) turun di bawah banner login.
+function aturAtas(){const el=$('loginbar'),h=el.hidden?0:el.offsetHeight;document.documentElement.style.setProperty('--atas',(h?58+h+6:62)+'px');letakCamctl();}
+function keWorkspace(id){
+  pandanganAwal(); // menutup ruang proyek + kembali ke Kantor
+  if(id&&id!==activeId&&S.ws.find(w=>w.id===id)){activeId=S.active=id;S.selected=null;built=null;}
+  dirty=true;
+}
 function renderTabs(){
   $('wstabs').innerHTML=S.ws.map(w=>{const st=w.status==='running'?'run':w.status==='done'?'done':(w.status==='planning'||w.status==='final'||w.status==='usulan')?'plan':'';
     return '<button class="wstab" role="tab" data-ws="'+w.id+'" aria-selected="'+(w.id===activeId)+'"><span class="dot '+st+'"></span>'+esc(w.nama)+'<span class="pct">'+pct(w)+'%</span></button>'}).join('');
@@ -1297,8 +1343,7 @@ function cekChat(){const el=$('chatin');if(!el)return false;const lewat=cekPanja
 function renderHud(){
   const w=W();const [lbl,cls]=STATUS_LBL[w.status]||['',''];const p=pct(w);
   const n=s=>w.tasks.filter(t=>s.includes(t.status)).length;
-  const pl=BR.on?((BR.info||{}).peringatanLogin||[]):[];
-  $('hud').innerHTML=pl.map(x=>'<div class="note" style="color:var(--bad)"><strong>Akun '+esc(x.nama)+' kemungkinan belum login:</strong> '+esc(x.configDir)+'</div>').join('')+'<div class="row" style="justify-content:space-between"><h1>'+esc(w.nama)+'</h1><span class="pill '+cls+'">'+lbl+'</span></div>'+
+  $('hud').innerHTML='<div class="row" style="justify-content:space-between"><h1>'+esc(w.nama)+'</h1><span class="pill '+cls+'">'+lbl+'</span></div>'+
    (w.goal?'<div class="goal">'+esc(w.goal)+'</div>':'<div class="goal">Belum ada brief. Tulis brief di kolom bawah.</div>')+
    '<div class="bar" role="progressbar" aria-valuenow="'+p+'" aria-valuemin="0" aria-valuemax="100"><b style="width:'+p+'%"></b></div>'+
    '<div class="stats"><span><strong>'+p+'%</strong> progres</span><span><strong>'+n(['selesai'])+'</strong>/'+w.tasks.length+' tugas</span><span><strong>'+n(['kerja'])+'</strong> aktif</span>'+(BR.on?'<span>setara <strong>$'+(w.biaya||0).toFixed(2)+'</strong>'+(batasWs(w)?' / $'+batasWs(w).toFixed(2):'')+'</span><span><strong>'+Math.round((w.token||0)/1000)+'k</strong> token</span>':S.settings.mode==='api'?'<span>biaya <strong>$'+w.biaya.toFixed(3)+'</strong></span>':'<span>mode <strong>simulasi</strong></span>')+'</div>'+
@@ -1527,8 +1572,8 @@ applyTheme();buildStatic();resize();pandanganAwal();muatKenney();
 // HP: tombol kamera selalu tepat di atas panel bawah (tinggi panel berubah: diciutkan, mode Laptop, isi kolom brief).
 function letakCamctl(){const c=$('camctl'),sh=$('sheet'),ru=$('ruang');if(innerWidth>=900){c.style.bottom='';ru.style.bottom='';$('cariHasil').style.maxHeight='';return;}
   const b=Math.max(16,Math.round(innerHeight-sh.getBoundingClientRect().top+10));c.style.bottom=b+'px';ru.style.bottom=(b+48)+'px'; // panel ruang proyek di atas tombol kamera
-  $('cariHasil').style.maxHeight=Math.max(96,Math.round(sh.getBoundingClientRect().top-136))+'px';} // daftar hasil cari berhenti di atas panel bawah
-if(window.ResizeObserver)new ResizeObserver(letakCamctl).observe($('sheet'));addEventListener('resize',letakCamctl);$('sheet').addEventListener('transitionend',letakCamctl);letakCamctl();
+  const atas=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--atas'))||62;$('cariHasil').style.maxHeight=Math.max(96,Math.round(sh.getBoundingClientRect().top-atas-74))+'px';} // daftar hasil cari berhenti di atas panel bawah
+if(window.ResizeObserver){new ResizeObserver(letakCamctl).observe($('sheet'));new ResizeObserver(()=>{if(!$('loginbar').hidden)aturAtas();}).observe($('loginbar'));}addEventListener('resize',letakCamctl);$('sheet').addEventListener('transitionend',letakCamctl);letakCamctl();
 $('camctl').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;const c=b.dataset.cam;if(c==='zona'){gantiZona();return;}if(c==='cari'){bukaCari();return;}const k=+c;if(k)putar(k);else pandanganAwal();});
 muatProyek();
 {const inp=$('cariIn'),ul=$('cariHasil');
@@ -1554,7 +1599,7 @@ function frame(t){
   S.ws.forEach(w=>{if(!BR.on)tickWs(w,dt);w.agents.forEach(a=>animAgent(w,a,dt,w.id===activeId));});
   updateCam(raw);gayaPintu(raw);
   uiT+=raw;saveT+=raw;
-  if(uiT>.5||dirty){uiT=0;renderTabs();renderHud();drawScreen(W());if(dirty||tab==='tugas'||tab==='tim'){if(!document.activeElement||!document.activeElement.closest('#panes'))renderPane();}renderSel();if(BR.chat&&!$('modal').hidden)renderChat();dirty=false;}
+  if(uiT>.5||dirty){uiT=0;renderTabs();renderHud();renderLogin();drawScreen(W());if(dirty||tab==='tugas'||tab==='tim'){if(!document.activeElement||!document.activeElement.closest('#panes'))renderPane();}renderSel();if(BR.chat&&!$('modal').hidden)renderChat();dirty=false;}
   if(saveT>2){saveT=0;save();}
   renderer.render(scene,camera);requestAnimationFrame(frame);
 }
