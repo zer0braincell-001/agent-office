@@ -243,6 +243,24 @@ button.card:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
 .ruang .diff .dl.t{background:color-mix(in srgb,var(--ok) 18%,transparent)}
 .ruang .diff .dl.k{color:var(--muted)}
 .ruang .kartu .aksi{display:flex;gap:6px;flex-wrap:wrap}
+.ruang .kartu .kk .tbl{display:flex;gap:6px;flex-wrap:wrap}
+.ruang .psn.agen{max-width:100%;justify-self:stretch;background:color-mix(in srgb,var(--ok) 9%,var(--chip))}
+.ruang .kartu.run .baris{font-size:12px;line-height:1.45;color:var(--muted);overflow-wrap:anywhere}
+.ruang .kartu.run .baris b{color:var(--fg);font-weight:600}
+.ruang .kartu .st.antre,.ruang .kartu .st.jalan{color:var(--warn)}.ruang .kartu .st.selesai,.ruang .kartu .st.merged{color:var(--ok)}
+.ruang .kartu .st.gagal,.ruang .kartu .st.dihentikan{color:var(--bad)}
+.ruang .ns{font-family:var(--f-mono);font-size:11px;display:grid;gap:1px}
+.ruang .ns span{overflow-wrap:anywhere}.ruang .ns i{font-style:normal;color:var(--ok)}.ruang .ns em{font-style:normal;color:var(--bad)}
+.jdlg{display:grid;gap:8px;font-size:13px}
+.jdlg .kv{display:grid;grid-template-columns:auto 1fr;gap:3px 10px;font-size:12.5px}
+.jdlg .kv span:nth-child(odd){color:var(--muted)}.jdlg .kv span{overflow-wrap:anywhere}
+.jdlg pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:34vh;overflow:auto;margin:0;background:var(--chip);border-radius:10px;padding:10px;font-family:var(--f-mono);font-size:11.5px}
+.jdlg .galat{color:var(--bad);font-size:12.5px}
+.jdlg .kotor{font-family:var(--f-mono);font-size:11.5px;max-height:24vh;overflow:auto;background:var(--chip);border-radius:10px;padding:8px}
+.jdlg .diffpenuh{font-family:var(--f-mono);font-size:11px;line-height:1.45;max-height:62vh;overflow:auto;background:var(--chip);border-radius:10px;padding:6px 0}
+.jdlg .diffpenuh div{white-space:pre-wrap;overflow-wrap:anywhere;padding:0 8px}
+.jdlg .diffpenuh .h{background:color-mix(in srgb,var(--bad) 16%,transparent)}.jdlg .diffpenuh .t{background:color-mix(in srgb,var(--ok) 18%,transparent)}
+.jdlg .diffpenuh .f{font-weight:700;color:var(--fg);margin-top:6px}.jdlg .diffpenuh .k{color:var(--muted)}
 @media (max-width:899px){.camctl{bottom:calc(62% + 10px)}.sheet.min~.camctl{bottom:calc(146px + env(safe-area-inset-bottom,0px))}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -980,7 +998,7 @@ function masukRuang(i){
   const rangka=new THREE.Mesh(punya(M_,new THREE.BoxGeometry(3.3,2.1,.04)),MAT.dark);rangka.position.y=2.05;rangka.castShadow=true;pg.add(rangka);
   [-1.3,1.3].forEach(x=>{const k=new THREE.Mesh(punya(M_,new THREE.BoxGeometry(.08,1.05,.08)),MAT.dark);k.position.set(x,.52,0);pg.add(k);});
   PRJ.ruang={g,milik:M_,p,balik,i,awal,war,papan:{tex,gambar:gambarPapan},detail:null,detailGagal:'',
-    chat:{riwayat:[],usulan:{},pesanUsulan:{},konteks:null,sibuk:false,tunggu:null,gagal:'',galat:'',muat:true,konfirm:false}};
+    chat:{riwayat:[],usulan:{},pesanUsulan:{},jalan:{},aktif:null,pesanJalan:{},konfirmJalan:null,konteks:null,sibuk:false,tunggu:null,gagal:'',galat:'',muat:true,konfirm:false}};
   cam.goal=null;cam.tx=RUANG.x;cam.tz=RUANG.z-.3;cam.v=innerWidth>=900?8.2:9.5;
   panelRuang(p,war,i);perbaruiZona();muatDetail();muatChat();
 }
@@ -1065,8 +1083,8 @@ function muatChat(){
   if(!BR.on){c.muat=false;c.gagal=location.protocol==='file:'?'Kantor dibuka dari file, tanpa server: chat penjaga tidak tersedia.':'Mode Simulasi: chat penjaga hanya ada lewat server kantor (mode Laptop).';isiChat();return;}
   isiChat();
   api('proyek/'+encodeURIComponent(r.p.slug)+'/chat').then(j=>{if(PRJ.ruang!==r)return;
-      c.muat=false;c.riwayat=Array.isArray(j.riwayat)?j.riwayat:[];c.usulan=j.usulan||{};c.konteks=j.konteks||null;c.sibuk=!!j.sibuk;isiChat();
-      if(c.sibuk)setTimeout(()=>{if(PRJ.ruang===r)muatChat();},2500);}, // jawaban pesan sebelumnya belum masuk: cek lagi
+      c.muat=false;c.riwayat=Array.isArray(j.riwayat)?j.riwayat:[];c.usulan=j.usulan||{};c.jalan=j.jalan||{};c.aktif=j.aktif||null;c.batasJalankan=j.batasJalankan;c.konteks=j.konteks||null;c.sibuk=!!j.sibuk;isiChat();
+      if((c.sibuk||c.aktif)&&!c.poll){c.poll=setTimeout(()=>{c.poll=null;if(PRJ.ruang===r)muatChat();},2500);}}, // jawaban pesan sebelumnya belum masuk: cek lagi
     e=>{if(PRJ.ruang!==r)return;c.muat=false;c.gagal='Chat tidak bisa dimuat: '+e.message;isiChat();});
 }
 function kirimChatRuang(){
@@ -1077,7 +1095,7 @@ function kirimChatRuang(){
   c.tunggu=m;c.galat='';c.konfirm=false;isiChat();gulirChat();
   api('proyek/'+encodeURIComponent(r.p.slug)+'/chat',{pesan:m}).then(j=>{
     c.tunggu=null;if(PRJ.ruang!==r)return;
-    if(Array.isArray(j.riwayat))c.riwayat=j.riwayat;if(j.usulan)Object.assign(c.usulan,j.usulan);if(j.konteks)c.konteks=j.konteks;
+    if(Array.isArray(j.riwayat))c.riwayat=j.riwayat;if(j.usulan)Object.assign(c.usulan,j.usulan);if(j.jalan)Object.assign(c.jalan,j.jalan);if(j.konteks)c.konteks=j.konteks;
     const t=$('ruangIn');if(t&&t.value.trim()===m)t.value='';
     isiChat();gulirChat();
   },e=>{c.tunggu=null;if(PRJ.ruang!==r)return;c.galat=e.message;isiChat();}); // teks pesan tetap di kotak, bisa dikirim ulang
@@ -1098,11 +1116,11 @@ const kelasUmur=n=>n>30?'merah':n>14?'kuning':'ok';
 // Jawaban planner: blok ```prompt-cc``` jadi kartu + Salin; ```usulan-vault``` jadi kartu usulan dari SERVER (bukan JSON di teks).
 const RE_PAGAR=/```([A-Za-z-]*)[^\S\n]*\n([\s\S]*?)\n?```/g;
 function isiJawaban(el,m,r){
-  const t=String(m.teks||'');let i=0,x,adaUsulan=false;RE_PAGAR.lastIndex=0;
+  const t=String(m.teks||'');let i=0,x,adaUsulan=false,nPrompt=0;RE_PAGAR.lastIndex=0;
   const teks=s=>{s=s.replace(/^\n+|\n+$/g,'');if(s)teksJawaban(el,s);};
   while((x=RE_PAGAR.exec(t))){
     teks(t.slice(i,x.index));const j=x[1].toLowerCase();
-    if(j==='prompt-cc')el.append(kartuPrompt(x[2]));
+    if(j==='prompt-cc')el.append(kartuPrompt(x[2],r,m.t,nPrompt++));
     else if(j==='usulan-vault'){if(!adaUsulan)el.append(kartuUsulan(r,m.usulan));adaUsulan=true;}
     else{const pre=document.createElement('pre');pre.textContent=x[2];el.append(pre);}
     i=RE_PAGAR.lastIndex;}
@@ -1113,11 +1131,14 @@ function salin(teks){
   return new Promise((ok,gagal)=>{const ta=document.createElement('textarea');ta.value=teks;ta.setAttribute('readonly','');ta.style.position='fixed';ta.style.opacity='0';document.body.append(ta);ta.select();
     let b=false;try{b=document.execCommand('copy');}catch(e){}ta.remove();b?ok():gagal(new Error('Browser menolak menyalin; pilih teksnya manual.'));});
 }
-function kartuPrompt(isi){
+function kartuPrompt(isi,r,t,blok){
   const buat=(tag,cls,teks)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(teks!=null)e.textContent=teks;return e;};
   const k=buat('div','kartu prompt'),kk=buat('div','kk'),b=buat('button','btn sm','Salin prompt');b.type='button';
   b.addEventListener('click',()=>salin(isi).then(()=>{b.textContent='Tersalin ✓';toast('Prompt disalin. Tempel ke Claude Code.');setTimeout(()=>{b.textContent='Salin prompt';},2000);},e=>toast(e.message,true)));
-  kk.append(buat('span','lbl','Prompt untuk Claude Code'),b);k.append(kk,buat('pre','',isi));return k;
+  const tb=buat('span','tbl');tb.append(b);
+  if(r&&BR.on&&t){const jl=buat('button','btn ghost sm','Jalankan');jl.type='button';const ak=r.chat.aktif;jl.disabled=!!ak;jl.title=ak?'Masih ada run di ruang ini':'Agen mengerjakan prompt ini di worktree terpisah (perlu ACC)';
+    jl.addEventListener('click',()=>bukaJalankan(r,t,blok));tb.append(jl);}
+  kk.append(buat('span','lbl','Prompt untuk Claude Code'),tb);k.append(kk,buat('pre','',isi));return k;
 }
 const TEKS_STATUS={menunggu:'Menunggu ACC',diterapkan:'Diterapkan',ditolak:'Ditolak','tidak-valid':'Tidak valid',kedaluwarsa:'Kedaluwarsa'};
 function kartuUsulan(r,id){
@@ -1139,6 +1160,72 @@ function kartuUsulan(r,id){
     acc.addEventListener('click',()=>jalan('terapkan'));tolak.addEventListener('click',()=>jalan('tolak'));ak.append(acc,tolak);k.append(ak);}
   return k;
 }
+/* Tahap B: Jalankan prompt-cc oleh agen di git worktree (ACC dulu). Semua isi modal lewat textContent. */
+const TEKS_RUN={antre:'Antre',jalan:'Jalan',selesai:'Selesai',gagal:'Gagal',dihentikan:'Dihentikan',merged:'Di-merge',dibuang:'Dibuang'};
+function el_(tag,cls,teks){const e=document.createElement(tag);if(cls)e.className=cls;if(teks!=null)e.textContent=teks;return e;}
+function modalDom(){openModal('<div class="jdlg" id="jdlg"></div>');return $('jdlg');}
+function bukaJalankan(r,t,blok){
+  const box=modalDom();box.append(el_('h2','','Jalankan prompt ini?'),el_('div','small','Memeriksa repo…'));
+  api('proyek/'+encodeURIComponent(r.p.slug)+'/jalankan-cek',{t,blok}).then(j=>{
+    if(!$('jdlg'))return;box.replaceChildren(el_('h2','','Jalankan prompt ini?'));
+    const kv=el_('div','kv');const tambah=(k,v)=>kv.append(el_('span','',k),el_('span','',v));
+    tambah('Repo',j.repo);tambah('Branch asal',j.asal+' @ '+j.base);tambah('Branch baru',j.branch);tambah('Worktree',j.wt);
+    tambah('Agen',j.model+' · Read/Edit/Write/Glob/Grep, tanpa Bash · maks 25 langkah');tambah('Batas biaya run',j.batas?usdChat(j.batas):'tanpa batas');
+    box.append(kv,el_('div','small','Prompt yang dikerjakan:'),el_('pre','',j.prompt),
+      el_('div','small','Folder kerja kamu tidak disentuh. Hasil di-commit di branch baru (tanpa push); merge ke '+j.asal+' hanya fast-forward dan perlu ACC lagi.'));
+    const row=el_('div','row');const tutup=el_('button','btn ghost sm','Batal');tutup.type='button';tutup.setAttribute('data-close','');
+    if(!j.bersih){box.append(el_('div','galat',j.pesanKotor),el_('div','kotor',j.kotor.join('\n')));row.append(tutup);box.append(row);return;}
+    const ok=el_('button','btn sm','ACC, jalankan');ok.type='button';
+    ok.addEventListener('click',()=>{ok.disabled=true;api('proyek/'+encodeURIComponent(r.p.slug)+'/jalankan',{t,blok,id:j.id}).then(x=>{
+        $('modal').hidden=true;toast('Run dimulai di '+x.run.branch);if(PRJ.ruang===r){r.chat.aktif=x.run.id;r.chat.jalan[x.run.id]=x.run;muatChat();}},
+      e=>{ok.disabled=false;const g=box.querySelector('.galat')||el_('div','galat');g.textContent=e.message;box.insertBefore(g,row);});});
+    row.append(ok,tutup);box.append(row);
+  },e=>{if(!$('jdlg'))return;box.replaceChildren(el_('h2','','Tidak bisa dijalankan'),el_('div','galat',e.message));const row=el_('div','row');const tb=el_('button','btn ghost sm','Tutup');tb.setAttribute('data-close','');row.append(tb);box.append(row);});
+}
+function lihatDiff(r,id){
+  const box=modalDom();box.append(el_('h2','','Diff run'),el_('div','small','Memuat…'));
+  fetch('/api/proyek/'+encodeURIComponent(r.p.slug)+'/diff?id='+encodeURIComponent(id),{headers:{'x-pin':BR.pin}}).then(x=>x.json().then(j=>{if(!x.ok)throw new Error(j.error||('HTTP '+x.status));return j;})).then(j=>{
+    if(!$('jdlg'))return;box.replaceChildren(el_('h2','','Diff '+j.branch+' ('+j.base+'..'+j.commit+')'));
+    const dv=el_('div','diffpenuh');dv.setAttribute('aria-label','Diff lengkap (baca saja)');
+    String(j.diff||'').split('\n').forEach(l=>{const k=/^(diff --git|index |\+\+\+ |--- )/.test(l)?(l.startsWith('diff')?'f':'k'):l[0]==='+'?'t':l[0]==='-'?'h':l.startsWith('@@')?'k':'';dv.append(el_('div',k,l||' '));});
+    const row=el_('div','row');const tb=el_('button','btn ghost sm','Tutup');tb.setAttribute('data-close','');row.append(tb);box.append(dv,row);
+  }).catch(e=>{if(!$('jdlg'))return;box.replaceChildren(el_('h2','','Diff run'),el_('div','galat',e.message));});
+}
+function aksiRun(r,id,aksi){
+  const c=r.chat;c.konfirmJalan=null;delete c.pesanJalan[id];
+  api('proyek/'+encodeURIComponent(r.p.slug)+'/'+aksi,{id}).then(j=>{if(PRJ.ruang!==r)return;if(j.run)c.jalan[id]=j.run;if(Array.isArray(j.riwayat))c.riwayat=j.riwayat;
+      toast(aksi==='merge'?'Di-merge (fast-forward) ke '+j.run.asal+'. Tidak ada push.':aksi==='buang'?'Run dibuang: worktree + branch dihapus':'Menghentikan run…');isiChat();muatChat();},
+    e=>{if(PRJ.ruang!==r)return;c.pesanJalan[id]=e.message;isiChat();muatChat();});
+}
+function kartuJalan(r,id){
+  const c=r.chat,j=id&&c.jalan[id],k=el_('div','kartu run');
+  if(!j){k.append(el_('div','galat','Data run tidak ditemukan di server.'));return k;}
+  const kk=el_('div','kk');kk.append(el_('span','lbl','Run agen · '+j.branch),el_('span','st '+j.status,TEKS_RUN[j.status]||j.status));k.append(kk);
+  const baris=(lbl,v)=>{const d=el_('div','baris');d.append(el_('b','',lbl+': '),v);k.append(d);};
+  baris('Dari',j.asal+' @ '+j.base+(j.commit?' → '+j.commit:''));
+  baris('Biaya',usdChat(j.biaya)+(j.batas?' dari batas '+usdChat(j.batas):'')+(j.langkah?' · '+j.langkah+' langkah':''));
+  if(j.status==='jalan'&&j.aktivitas)baris('Sedang',j.aktivitas);
+  if(j.status==='antre')baris('Antre','menunggu slot akun agen');
+  if(j.penolakan&&j.penolakan.length)baris('Ditolak izin',j.penolakan.map(p=>p.alat+(p.file?' '+p.file:'')).join('; '));
+  if(j.galat)k.append(el_('div','galat',j.galat));
+  if(j.numstat&&j.numstat.length){const ns=el_('div','ns');j.numstat.forEach(f=>{const sp=el_('span');sp.append(el_('i','',f.tambah==null?'bin':'+'+f.tambah),' ',el_('em','',f.hapus==null?'':'−'+f.hapus),' '+f.file);ns.append(sp);});k.append(ns);}
+  else if(['selesai','gagal','dihentikan'].includes(j.status))k.append(el_('div','baris','Tidak ada perubahan file.'));
+  const pesan=c.pesanJalan[id];if(pesan)k.append(el_('div','galat',pesan));
+  if(!BR.on)return k;
+  const ak=el_('div','aksi'),tb=(t,fn,cls)=>{const b=el_('button','btn sm '+(cls||'ghost'),t);b.type='button';b.addEventListener('click',fn);ak.append(b);return b;};
+  const kf=c.konfirmJalan&&c.konfirmJalan.id===id?c.konfirmJalan.aksi:null;
+  if(kf){ak.append(el_('span','baris',kf==='merge'?'Merge fast-forward '+j.branch+' ke '+j.asal+' di repo lokal (tanpa push)?':'Hapus worktree dan branch '+j.branch+'?'));
+    tb(kf==='merge'?'Ya, merge':'Ya, buang',()=>aksiRun(r,id,kf),kf==='buang'?'danger':'');tb('Batal',()=>{c.konfirmJalan=null;isiChat();});}
+  else{
+    if(STATUS_RUN_AKTIF.includes(j.status))tb('Hentikan',()=>aksiRun(r,id,'hentikan'),'danger');
+    if(j.commit&&j.status!=='dibuang')tb('Lihat diff',()=>lihatDiff(r,id));
+    if(j.commit&&['selesai','gagal','dihentikan'].includes(j.status))tb('Merge ke '+j.asal,()=>{c.konfirmJalan={id,aksi:'merge'};isiChat();},'');
+    if(['selesai','gagal','dihentikan'].includes(j.status))tb('Buang',()=>{c.konfirmJalan={id,aksi:'buang'};isiChat();});
+  }
+  if(ak.children.length)k.append(ak);
+  return k;
+}
+const STATUS_RUN_AKTIF=['antre','jalan'];
 function isiChat(){
   const r=PRJ.ruang,box=r&&$('ruangChat');if(!box)return;const c=r.chat;
   const buat=(tag,cls,teks)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(teks!=null)e.textContent=teks;return e;};
@@ -1152,7 +1239,7 @@ function isiChat(){
   else if(c.muat)kt.textContent='Memuat konteks…';
   // Riwayat
   const rw=$('ruangRiwayat');rw.replaceChildren();
-  c.riwayat.forEach(m=>{const kamu=m.dari==='kamu',d=buat('div','psn '+(kamu?'kamu':m.dari==='sistem'?'sistem':'penjaga'));if(kamu||m.dari==='sistem')d.textContent=m.teks;else isiJawaban(d,m,r);
+  c.riwayat.forEach(m=>{const kamu=m.dari==='kamu',d=buat('div','psn '+(kamu?'kamu':m.dari==='sistem'?'sistem':m.dari==='agen'?'agen':'penjaga'));if(kamu||m.dari==='sistem')d.textContent=m.teks;else if(m.dari==='agen'){d.append(kartuJalan(r,m.jalan));if(m.teks)teksJawaban(d,m.teks);}else isiJawaban(d,m,r);
     if(!kamu&&m.biaya!=null)d.append(buat('span','biaya','setara '+usdChat(m.biaya)+(m.token?' · '+fmtN(Math.round(m.token/100)/10)+'k token':'')));rw.append(d);});
   if(c.tunggu)rw.append(buat('div','psn kamu tunda',c.tunggu));
   if(!c.riwayat.length&&!c.tunggu&&!c.muat&&!c.gagal)rw.append(buat('div','alasan','Belum ada obrolan. Planner ruang mengikuti workflow.md dan hanya tahu baris INDEX, STATE.md, NEXT.md, dan git log proyek ini. Usulan perubahan STATE/NEXT baru ditulis setelah kamu ACC. Tiap pesan memakai kuota akun agen.'));
