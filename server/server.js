@@ -26,6 +26,10 @@ const DEFAULT_CONFIG = {
   akun: [{ nama: 'Akun A', configDir: '' }],
   maxAgenPerAkun: 2,
   model: { manajer: 'opus', staf: 'sonnet' },
+  // Chat "penjaga ruang" di ruang proyek (tanpa alat, konteks STATE/NEXT proyek itu saja).
+  modelChat: 'sonnet',
+  // Batas biaya-setara harian (USD) untuk semua chat ruang proyek. Tercapai = chat ditolak (429) sampai besok. 0 = tanpa batas.
+  batasChatHarian: 0.5,
   // Alat yang boleh dipakai staf. Bash sengaja belum diizinkan di tahap 1.
   alatStaf: ['Read', 'Edit', 'Write', 'Glob', 'Grep'],
   // Batas biaya-setara per workspace (USD, dari laporan Claude Code). 0 = tanpa batas.
@@ -174,9 +178,13 @@ function jumlahStream(usagePesan, nEvent) {
   return { pesanUnik: usagePesan.size, eventAssistant: nEvent, usage: u };
 }
 function catatSesi(baris) { try { fs.appendFile(SESI_LOG, JSON.stringify(baris) + '\n', () => {}); } catch (e) {} }
-function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEvent, maxTurns = 0, peran = '', tugas = null }) {
+/* Chat ruang proyek memanggil runClaude dengan w = null dan `ruang`: { cwd, sesi } (lihat chatRuang). Bedanya:
+   --tools "" (tanpa alat sama sekali) + --disable-slash-commands, --system-prompt-file (MENGGANTI system prompt
+   bawaan Claude Code, jadi tidak ada info cwd/env/alat), --no-session-persistence, cwd = folder kosong khusus,
+   biaya tidak masuk workspace mana pun. */
+function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEvent, maxTurns = 0, peran = '', tugas = null, ruang = null }) {
   // Gerbang batas biaya: dicek sebelum SETIAP panggilan baru. Pemanggil yang memutuskan jeda.
-  if (lewatBatas(w)) return Promise.resolve({ text: '', session: resume || null, biaya: 0, token: 0, error: 'Batas biaya workspace tercapai', batas: true, rincian: rincianKosong() });
+  if (w && lewatBatas(w)) return Promise.resolve({ text: '', session: resume || null, biaya: 0, token: 0, error: 'Batas biaya workspace tercapai', batas: true, rincian: rincianKosong() });
   return new Promise((resolve) => {
     const sysFile = path.join(os.tmpdir(), 'kantor-sys-' + uid() + '.txt');
     fs.writeFileSync(sysFile, system || '');
@@ -187,24 +195,25 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
     // Opsi variadik dikirim sebagai SATU argumen dipisah koma dan selalu diikuti opsi lain (--output-format),
     // jadi tidak ada argumen berikutnya yang tertelan sebagai nama alat. Prompt dikirim lewat stdin.
     const daftarAlat = (alat || []).filter(Boolean).join(',');
-    const argAlat = daftarAlat ? ['--tools', daftarAlat, '--allowedTools', daftarAlat, '--permission-mode', 'acceptEdits']
+    const argAlat = ruang ? ['--tools', '', '--disable-slash-commands', '--no-session-persistence']
+      : daftarAlat ? ['--tools', daftarAlat, '--allowedTools', daftarAlat, '--permission-mode', 'acceptEdits']
       : ['--tools', ALAT_MANAJER];
     // MCP: agen tidak boleh punya alat MCP apa pun. --strict-mcp-config tanpa --mcp-config = server dari
     // .mcp.json, ~/.claude.json, dan plugin tidak dimuat (CLI reference). Konektor claude.ai tidak disebut
     // di sana; switch resminya ENABLE_CLAUDEAI_MCP_SERVERS=false (docs MCP, "Disable claude.ai connectors").
-    const args = ['-p', ...argAlat, '--strict-mcp-config', '--output-format', 'stream-json', '--verbose', '--model', model, '--append-system-prompt-file', sysFile];
+    const args = ['-p', ...argAlat, '--strict-mcp-config', '--output-format', 'stream-json', '--verbose', '--model', model, ruang ? '--system-prompt-file' : '--append-system-prompt-file', sysFile];
     if (maxTurns > 0) args.push('--max-turns', String(maxTurns));
     if (resume) args.push('--resume', resume);
     const env = Object.assign({}, process.env, { ENABLE_CLAUDEAI_MCP_SERVERS: 'false' });
     const ak = CFG.akun[akun % CFG.akun.length] || {};
     if (ak.configDir) env.CLAUDE_CONFIG_DIR = ak.configDir;
     const win = process.platform === 'win32';
-    const child = spawn(win ? CFG.perintahClaude : CFG.perintahClaude, win ? args.map(q) : args, { cwd: w.folder, env, shell: win, windowsHide: true });
+    const child = spawn(win ? CFG.perintahClaude : CFG.perintahClaude, win ? args.map(q) : args, { cwd: ruang ? ruang.cwd : w.folder, env, shell: win, windowsHide: true });
     running.set(key, { child, akun });
     let buf = '', out = { text: '', session: resume || null, biaya: 0, token: 0, error: null, rincian: null, teksTerakhir: '' };
     const usagePesan = new Map(); // message.id -> usage; cadangan kalau sesi dihentikan sebelum ada pesan result
     let nEventAssistant = 0, adaResult = false; const modelStream = new Set(); // diagnostik sesi.jsonl
-    const dasarSesi = () => ({ t: new Date().toISOString(), ws: w.id, tugas, peran, model });
+    const dasarSesi = () => Object.assign({ t: new Date().toISOString(), ws: w ? w.id : null, tugas, peran, model }, ruang ? ruang.sesi : null);
     child.stdout.on('data', d => {
       buf += d; let i;
       while ((i = buf.indexOf('\n')) >= 0) {
@@ -216,8 +225,10 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
           out.initDicatat = true;
           const alatAda = (Array.isArray(ev.tools) ? ev.tools : []).map(x => typeof x === 'string' ? x : (x && x.name) || '?');
           const mcp = (Array.isArray(ev.mcp_servers) ? ev.mcp_servers : []).map(s => typeof s === 'string' ? s : (s && s.name || '?') + (s && s.status ? ' (' + s.status + ')' : ''));
-          const [, aid, ekstra] = key.split(':'); const ag = agentOf(w, aid);
-          log(w, (ag ? ag.nama : 'Sistem') + (ekstra === 'chat' ? ' (chat)' : ''), 'Alat tersedia (' + alatAda.length + '): ' + (alatAda.join(', ') || '-') + ' · MCP: ' + (mcp.length ? mcp.join(', ') : 'tidak ada'));
+          out.alatInit = { alat: alatAda, mcp };
+          if (ruang) { ruang.sesi.alat = alatAda; ruang.sesi.mcp = mcp; console.log('[ruang ' + ruang.sesi.slug + '] Alat tersedia (' + alatAda.length + '): ' + (alatAda.join(', ') || '-') + ' · MCP: ' + (mcp.length ? mcp.join(', ') : 'tidak ada')); }
+          else { const [, aid, ekstra] = key.split(':'); const ag = agentOf(w, aid);
+          log(w, (ag ? ag.nama : 'Sistem') + (ekstra === 'chat' ? ' (chat)' : ''), 'Alat tersedia (' + alatAda.length + '): ' + (alatAda.join(', ') || '-') + ' · MCP: ' + (mcp.length ? mcp.join(', ') : 'tidak ada')); }
         }
         if (ev.type === 'assistant' && ev.message && Array.isArray(ev.message.content)) {
           if (ev.message.usage) { usagePesan.set(ev.message.id || ('m' + usagePesan.size), ev.message.usage); nEventAssistant++; }
@@ -255,8 +266,8 @@ function runClaude({ key, w, akun = 0, model, system, prompt, resume, alat, onEv
         for (const u of usagePesan.values()) tambahRincian(out.rincian, Object.assign(dariUsage(u, 0), { sesi: 0 }));
       }
       const r = out.rincian; out.token = r.inp + r.out + r.cw + r.cr;
-      w.biaya = (w.biaya || 0) + out.biaya; w.token = (w.token || 0) + out.token;
-      w.rincian = tambahRincian(w.rincian || rincianKosong(), r);
+      if (w) { w.biaya = (w.biaya || 0) + out.biaya; w.token = (w.token || 0) + out.token;
+        w.rincian = tambahRincian(w.rincian || rincianKosong(), r); }
       resolve(out);
     });
     child.stdin.end(prompt);
@@ -431,7 +442,7 @@ setInterval(() => {
 /* ---------------- HTTP ---------------- */
 const clients = new Set();
 let bcTimer = null;
-function snapshot() { return JSON.stringify({ ws: S.ws, info: { akun: CFG.akun.map(a => a.nama), aktif: akunAktif(), maxAgenPerAkun: CFG.maxAgenPerAkun, model: CFG.model, folderData: CFG.folderData, folderProyek: CFG.folderProyek, batasBiaya: CFG.batasBiaya, maxTurns: CFG.maxTurns, peringatanLogin: PERINGATAN_LOGIN, batasInput: BATAS_INPUT } }); }
+function snapshot() { return JSON.stringify({ ws: S.ws, info: { akun: CFG.akun.map(a => a.nama), aktif: akunAktif(), maxAgenPerAkun: CFG.maxAgenPerAkun, model: CFG.model, folderData: CFG.folderData, folderProyek: CFG.folderProyek, batasBiaya: CFG.batasBiaya, maxTurns: CFG.maxTurns, peringatanLogin: PERINGATAN_LOGIN, batasInput: BATAS_INPUT, chatRuang: { model: CFG.modelChat, batasHarian: +CFG.batasChatHarian || 0, hariIni: biayaHarian() } } }); }
 function broadcast() { if (bcTimer) return; bcTimer = setTimeout(() => { bcTimer = null; const s = 'data: ' + snapshot() + '\n\n'; for (const c of clients) c.write(s); }, 250); }
 function body(req) { return new Promise(r => { let b = ''; req.on('data', d => { b += d; if (b.length > 1e6) req.destroy(); }); req.on('end', () => { try { r(JSON.parse(b || '{}')); } catch (e) { r({}); } }); }); }
 function send(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(obj)); }
@@ -513,11 +524,15 @@ function sajikanHasil(req, res, pinOk) {
    polos. Cache per mtime+ukuran. Masalah apa pun = 200 dengan daftar kosong + alasan (web menampilkan papan alasan). */
 let CACHE_PROYEK = null;
 const BATAS_TEKS_PROYEK = { nama: 80, ringkasan: 400, fase: 400 };
+// Hanya tag HTML yang dikenal yang dibuang. Teks berbentuk <...> lain (mis. http://<IP LAN>:8501, <slug>) dibiarkan:
+// semua teks ini ditampilkan lewat textContent, jadi tidak ada risiko markup.
+const TAG_HTML = /<\/?(?:a|abbr|b|blockquote|br|center|code|dd|del|details|div|dl|dt|em|font|h[1-6]|hr|i|img|ins|kbd|li|mark|ol|p|pre|q|s|small|span|strike|strong|sub|summary|sup|table|tbody|td|th|thead|tr|tt|u|ul|var|video|audio|source|iframe|picture|figure|figcaption|section|article|nav|header|footer|main|aside|script|style|svg|path)\b(?:\s[^<>]*)?\/?>/g; // huruf kecil saja: <I am>, <A B> bukan tag
 function teksPolos(t) {
   return String(t || '')
     .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')            // gambar
     .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')             // link
-    .replace(/<[^>]*>/g, '')                              // tag HTML
+    .replace(/<!--[\s\S]*?-->/g, '')                         // komentar HTML
+    .replace(TAG_HTML, '')                                // tag HTML dikenal; <IP LAN> dsb. tetap utuh
     .replace(/(\*\*|__)(.+?)\1/g, '$2')                   // tebal
     .replace(/`+([^`]*)`+/g, '$1')                        // kode
     .replace(/(^|[\s(])[*_]([^*_\s][^*_]*?)[*_](?=[\s).,;:!?]|$)/g, '$1$2') // miring
@@ -721,6 +736,110 @@ function slugProyek(req, p) {
   return bacaProyek().proyek.some(x => x.slug === s) ? { slug: s } : { kode: 404 };
 }
 
+/* ---------------- Chat "penjaga ruang" per proyek (ruang proyek, langkah 2) ----------------
+   Keputusan user 28-11: chat hanya tahu isi ruangan itu. Agen TIDAK diberi alat apa pun (--tools ""); server yang
+   menyusun konteks (baris INDEX + STATE.md + NEXT.md proyek itu, lewat bacaVault: read-only, realpath di dalam vault)
+   dan memasukkannya ke system prompt. Jadi agen secara fisik tidak bisa membaca file lain, dan request tanpa definisi
+   alat lebih murah. Riwayat per ruang di <folderData>/ruang/<slug>.json (bukan vault, bukan repo). */
+const BATAS_KONTEKS = { state: 24 * 1024, next: 12 * 1024 }; // byte per file; lewat = dipotong di batas baris + ditandai
+const RIWAYAT_SIMPAN = 20;   // pesan (tanya + jawab) yang disimpan per ruang
+const RIWAYAT_KIRIM = 6;     // giliran terakhir (1 giliran = 1 tanya + 1 jawab) yang dikirim ke model
+const MAX_TURNS_RUANG = 2;   // tanpa alat, jawaban selesai dalam 1 langkah; 2 = cadangan
+const DIR_RUANG = path.join(CFG.folderData, 'ruang');
+const CWD_RUANG = path.join(DIR_RUANG, '_cwd'); // folder kosong khusus: tidak ada CLAUDE.md proyek yang ikut terbaca
+const HARIAN_PATH = path.join(DIR_RUANG, '_harian.json');
+const tglLokal = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+let HARIAN = { tgl: '', usd: 0 };
+try { HARIAN = JSON.parse(fs.readFileSync(HARIAN_PATH, 'utf8')); } catch (e) {}
+function biayaHarian() { return HARIAN.tgl === tglLokal() ? +HARIAN.usd || 0 : 0; }
+function tambahHarian(usd) {
+  HARIAN = { tgl: tglLokal(), usd: biayaHarian() + (+usd || 0) };
+  try { fs.mkdirSync(DIR_RUANG, { recursive: true }); fs.writeFileSync(HARIAN_PATH, JSON.stringify(HARIAN)); } catch (e) {}
+}
+const slugRuangAman = (s) => /^[a-z0-9][a-z0-9._-]*$/.test(s) && !s.includes('..');
+const pathRiwayat = (slug) => path.join(DIR_RUANG, slug + '.json');
+function bacaRiwayat(slug) { try { const j = JSON.parse(fs.readFileSync(pathRiwayat(slug), 'utf8')); return Array.isArray(j.pesan) ? j.pesan : []; } catch (e) { return []; } }
+function simpanRiwayat(slug, pesan) {
+  fs.mkdirSync(DIR_RUANG, { recursive: true });
+  const f = pathRiwayat(slug), tmp = f + '.' + uid() + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify({ slug, pesan: pesan.slice(-RIWAYAT_SIMPAN) }, null, 1)); fs.renameSync(tmp, f);
+}
+// Potong di batas baris (tidak pernah di tengah baris/karakter). Hasil <= maxByte.
+function potongBaris(teks, maxByte) {
+  if (Buffer.byteLength(teks, 'utf8') <= maxByte) return { teks, terpotong: false };
+  const out = []; let n = 0;
+  for (const b of teks.split('\n')) { const k = Buffer.byteLength(b, 'utf8') + 1; if (n + k > maxByte) break; out.push(b); n += k; }
+  return { teks: out.join('\n'), terpotong: true };
+}
+function konteksRuang(slug) {
+  const p = bacaProyek().proyek.find(x => x.slug === slug); if (!p || !slugRuangAman(slug)) return null;
+  const satu = (nama, batas) => {
+    const r = bacaVault(path.join('projects', slug, nama));
+    if (!r.ada) return { ada: false, ditolak: !!r.ditolak, teks: '', byte: 0, asli: 0, terpotong: false, batas };
+    const asli = +String(r.kunci).split('|')[1] || 0;
+    const t = potongBaris(samarkan(r.teks.replace(/\r\n/g, '\n')).trimEnd(), batas);
+    return { ada: true, teks: t.teks, byte: Buffer.byteLength(t.teks, 'utf8'), asli, terpotong: t.terpotong || !!r.terpotong, batas };
+  };
+  return { p, state: satu('STATE.md', BATAS_KONTEKS.state), next: satu('NEXT.md', BATAS_KONTEKS.next) };
+}
+const infoKonteks = (k) => { const f = (x) => ({ ada: x.ada, byte: x.byte, asli: x.asli, batas: x.batas, terpotong: x.terpotong }); return { state: f(k.state), next: f(k.next) }; };
+function sistemRuang(k) {
+  const kb = (n) => (n / 1024).toFixed(0) + ' KB';
+  const bagian = (label, x) => x.ada
+    ? '<' + label + (x.terpotong ? ' terpotong="ya: hanya ' + kb(x.batas) + ' pertama dari ' + kb(x.asli) + ', sisanya tidak kamu lihat"' : '') + '>\n' + x.teks + '\n</' + label + '>'
+    : '<' + label + '>\n(file tidak ada)\n</' + label + '>';
+  return 'Kamu penjaga ruang proyek "' + k.p.nama + '" di Kantor Agen.\n' +
+    'Aturan:\n' +
+    '- Jawab HANYA dari konteks di bawah (baris INDEX, STATE.md, dan NEXT.md proyek ini). Itu satu-satunya yang kamu tahu.\n' +
+    '- Kalau jawabannya tidak ada di konteks, bilang terus terang kamu tidak tahu, lalu sarankan tanya planner. Jangan menebak atau mengarang.\n' +
+    '- Kamu tidak punya alat dan tidak bisa membuka, membaca, membuat, atau mengubah file apa pun. Kalau diminta mengubah sesuatu, bilang itu di luar kemampuanmu.\n' +
+    '- Bahasa Indonesia kasual, ringkas (biasanya maks 120 kata). Sapa pemilik proyek dengan "kamu".\n' +
+    (k.state.terpotong || k.next.terpotong ? '- Sebagian konteks terpotong (lihat atribut terpotong). Kalau pertanyaannya mungkin ada di bagian yang terpotong, sebutkan itu.\n' : '') +
+    '\nKonteks:\n<index>\nProyek: ' + k.p.nama + '\nFase: ' + (k.p.fase || '-') + '\nRingkasan: ' + (k.p.ringkasan || '-') + '\n</index>\n\n' +
+    bagian('state_md', k.state) + '\n\n' + bagian('next_md', k.next);
+}
+function promptRuang(riwayat, pesan) {
+  const giliran = riwayat.slice(-RIWAYAT_KIRIM * 2);
+  while (giliran.length && giliran[0].dari !== 'kamu') giliran.shift(); // mulai dari pertanyaan
+  const r = giliran.map(m => (m.dari === 'kamu' ? 'Pemilik: ' : 'Penjaga: ') + m.teks).join('\n\n');
+  return (r ? 'Obrolan sebelumnya (paling lama di atas):\n\n' + r + '\n\n---\n\n' : '') + 'Pesan baru dari pemilik: ' + pesan;
+}
+// Folder kerja agen chat: harus ada, kosong, dan tidak ada CLAUDE.md di folder itu maupun induknya.
+function siapkanCwdRuang() {
+  fs.mkdirSync(CWD_RUANG, { recursive: true });
+  const isi = fs.readdirSync(CWD_RUANG); if (isi.length) return 'Folder kerja chat ruang tidak kosong (' + CWD_RUANG + '): ' + isi.slice(0, 3).join(', ');
+  for (let d = CWD_RUANG; ; d = path.dirname(d)) {
+    for (const f of ['CLAUDE.md', 'CLAUDE.local.md', path.join('.claude', 'CLAUDE.md')]) if (fs.existsSync(path.join(d, f))) return 'Ada ' + path.join(d, f) + ' di atas folder kerja chat ruang; chat ditolak supaya file itu tidak ikut terbaca.';
+    if (path.dirname(d) === d) break;
+  }
+  return null;
+}
+async function chatRuang(slug, pesan) {
+  const key = 'ruang:' + slug;
+  if (running.has(key)) return { kode: 409, error: 'Penjaga ruang ini masih menjawab pesan sebelumnya. Tunggu sebentar.' };
+  if (akunAktif()[0] >= CFG.maxAgenPerAkun) return { kode: 409, error: 'Semua slot agen akun ' + infoAkun(0).nama + ' sedang dipakai (maks ' + CFG.maxAgenPerAkun + '). Coba lagi sebentar.' };
+  const batas = +CFG.batasChatHarian || 0;
+  if (batas > 0 && biayaHarian() >= batas) return { kode: 429, error: 'Batas biaya chat ruang hari ini tercapai ($' + biayaHarian().toFixed(2) + ' dari $' + batas.toFixed(2) + ' biaya-setara). Coba lagi besok, atau naikkan batasChatHarian di config.json.' };
+  const k = konteksRuang(slug); if (!k) return { kode: 404, error: 'Proyek tidak ada di INDEX' };
+  const cw = siapkanCwdRuang(); if (cw) return { kode: 500, error: cw };
+  const riwayat = bacaRiwayat(slug);
+  const sesi = { slug };
+  const r = await runClaude({ key, w: null, akun: 0, model: CFG.modelChat || 'sonnet', maxTurns: MAX_TURNS_RUANG, peran: 'ruang',
+    system: sistemRuang(k), prompt: promptRuang(riwayat, pesan), ruang: { cwd: CWD_RUANG, sesi } });
+  tambahHarian(r.biaya); broadcast();
+  const dasar = { konteks: infoKonteks(k), alat: sesi.alat || null, mcp: sesi.mcp || null, biaya: r.biaya, hariIni: biayaHarian(), batasHarian: batas };
+  if (r.login) { const ak = infoAkun(0); return Object.assign(dasar, { kode: 503, login: true, error: 'Akun agen belum login: ' + ak.nama + ' (configDir ' + ak.configDir + '). Login (PowerShell): $env:CLAUDE_CONFIG_DIR="' + ak.configDir + '"; claude  lalu ketik /login.' }); }
+  if (r.error || !r.text) return Object.assign(dasar, { kode: 502, error: 'Penjaga gagal menjawab: ' + (r.error || 'jawaban kosong') });
+  const t = Date.now(), baru = riwayat.concat([{ dari: 'kamu', teks: pesan, t }, { dari: 'penjaga', teks: r.text, t: Date.now(), biaya: r.biaya, token: r.token }]);
+  simpanRiwayat(slug, baru);
+  return Object.assign(dasar, { kode: 200, jawaban: r.text, riwayat: baru.slice(-RIWAYAT_SIMPAN) });
+}
+function infoRuang(slug) {
+  const k = konteksRuang(slug); if (!k) return null;
+  return { riwayat: bacaRiwayat(slug), konteks: infoKonteks(k), sibuk: running.has('ruang:' + slug), model: CFG.modelChat || 'sonnet',
+    hariIni: biayaHarian(), batasHarian: +CFG.batasChatHarian || 0, simpan: RIWAYAT_SIMPAN, kirim: RIWAYAT_KIRIM };
+}
+
 /* ---------------- /aset: model & tekstur web (Fase 3a), publik baca-saja ----------------
    Hanya folder <repo>/aset. Tanpa PIN (isinya aset CC0 yang memang ada di repo publik). Path dicek dari URL mentah
    lewat dalamFolder (tolak .., absolut, drive, symlink/junction keluar folder). */
@@ -766,10 +885,24 @@ http.createServer(async (req, res) => {
     if (req.method === 'GET' && p[1] === 'projects') return send(res, 200, usage.proyek(CFG));
     if (req.method === 'GET' && p[1] === 'proyek' && !p[2]) return send(res, 200, bacaProyek());
     if (p[1] === 'proyek' && p[2]) {
-      const benar = (p[3] === 'detail' && req.method === 'GET') || (p[3] === 'buka-folder' && req.method === 'POST');
+      const benar = (p[3] === 'detail' && req.method === 'GET') || (p[3] === 'buka-folder' && req.method === 'POST') ||
+        (p[3] === 'chat' && (req.method === 'GET' || req.method === 'POST')) || (p[3] === 'chat-hapus' && req.method === 'POST');
       if (!benar || p[4]) return send(res, 404, { error: 'Tidak ada' });
       const sl = slugProyek(req, p);
       if (!sl.slug) return send(res, sl.kode, { error: sl.kode === 403 ? 'Ditolak: path tidak valid' : sl.kode === 400 ? 'Slug tidak valid' : 'Proyek tidak ada di INDEX' });
+      if (p[3] === 'chat' && req.method === 'GET') { const i = infoRuang(sl.slug); return i ? send(res, 200, i) : send(res, 404, { error: 'Proyek tidak ada di INDEX' }); }
+      if (p[3] === 'chat') {
+        const b = await body(req); const pesan = String(b.pesan || '').trim();
+        if (!pesan) return send(res, 400, { error: 'Pesan kosong' });
+        const e = terlaluPanjang(pesan, 'chat', 'Pesan'); if (e) return send(res, 400, { error: e }); // ditolak, tidak dipotong
+        const h = await chatRuang(sl.slug, pesan); const kode = h.kode; delete h.kode; return send(res, kode, h);
+      }
+      if (p[3] === 'chat-hapus') {
+        if (!konteksRuang(sl.slug)) return send(res, 404, { error: 'Proyek tidak ada di INDEX' });
+        if (running.has('ruang:' + sl.slug)) return send(res, 409, { error: 'Penjaga sedang menjawab. Hapus riwayat setelah jawabannya masuk.' });
+        try { fs.unlinkSync(pathRiwayat(sl.slug)); } catch (e) {}
+        return send(res, 200, { ok: true, riwayat: [] });
+      }
       const d = detailProyek(sl.slug); if (!d) return send(res, 404, { error: 'Proyek tidak ada di INDEX' });
       if (p[3] === 'detail') return send(res, 200, d);
       if (!d.lokal) return send(res, 404, { error: 'Path lokal proyek belum tercatat di repos.md' });

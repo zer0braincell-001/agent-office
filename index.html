@@ -201,6 +201,24 @@ button.card:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
 .ruang .tautan{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
 .ruang .tautan a{text-decoration:none;display:inline-flex;align-items:center}
 .ruang .alasan{font-size:12px;color:var(--muted);line-height:1.45;overflow-wrap:anywhere}
+.ruang .chat{display:grid;gap:8px;border-top:1px solid var(--line);padding-top:8px;margin-top:2px}
+.ruang .chat .kepala{display:flex;align-items:center;justify-content:space-between;gap:6px;min-height:28px}
+.ruang .chat .hapusw{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end;font-size:12px}
+.ruang .chat .ktx{font-family:var(--f-mono);font-size:11px;line-height:1.45;color:var(--muted);overflow-wrap:anywhere}
+.ruang .chat .ktx b{color:var(--warn);font-weight:600;font-family:inherit}
+.ruang .riwayat{display:grid;gap:6px}
+.ruang .psn{white-space:pre-wrap;font-size:12.5px;line-height:1.5;background:var(--chip);border-radius:12px;padding:8px 10px;overflow-wrap:anywhere;max-width:92%;justify-self:start}
+.ruang .psn.kamu{justify-self:end;max-width:85%;background:color-mix(in srgb,var(--accent) 16%,var(--chip))}
+.ruang .psn.tunda{opacity:.65}
+.ruang .psn b{font-weight:650}
+.ruang .psn code{font-family:var(--f-mono);font-size:11.5px;background:color-mix(in srgb,var(--fg) 8%,transparent);border-radius:5px;padding:0 4px}
+.ruang .psn .biaya{display:block;margin-top:4px;font-family:var(--f-mono);font-size:10.5px;color:var(--muted);white-space:normal}
+.ruang .mengetik{font-size:12px;color:var(--muted);font-style:italic}
+.ruang .chat .galat{color:var(--bad)}
+.ruang .kirim{display:flex;gap:6px;align-items:flex-end;flex-wrap:nowrap}
+.ruang .kirim textarea{width:100%;box-sizing:border-box;border-radius:12px;border:1px solid var(--line);background:var(--panel-solid);color:var(--fg);padding:9px 11px;resize:none;font:inherit;font-size:13px}
+.ruang .kirim .btn{flex:none;height:42px}
+.ruang .btn.danger{background:var(--bad);color:#fff}
 @media (max-width:899px){.camctl{bottom:calc(62% + 10px)}.sheet.min~.camctl{bottom:calc(146px + env(safe-area-inset-bottom,0px))}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -935,9 +953,10 @@ function masukRuang(i){
   [0,Math.PI].forEach(r=>{const b=bidang(M_,3.2,2,new THREE.MeshBasicMaterial({map:tex,toneMapped:false}));b.position.set(0,2.05,r?-.03:.03);b.rotation.y=r;pg.add(b);});
   const rangka=new THREE.Mesh(punya(M_,new THREE.BoxGeometry(3.3,2.1,.04)),MAT.dark);rangka.position.y=2.05;rangka.castShadow=true;pg.add(rangka);
   [-1.3,1.3].forEach(x=>{const k=new THREE.Mesh(punya(M_,new THREE.BoxGeometry(.08,1.05,.08)),MAT.dark);k.position.set(x,.52,0);pg.add(k);});
-  PRJ.ruang={g,milik:M_,p,balik,i,awal,war,papan:{tex,gambar:gambarPapan},detail:null,detailGagal:''};
+  PRJ.ruang={g,milik:M_,p,balik,i,awal,war,papan:{tex,gambar:gambarPapan},detail:null,detailGagal:'',
+    chat:{riwayat:[],konteks:null,sibuk:false,tunggu:null,gagal:'',galat:'',muat:true,konfirm:false}};
   cam.goal=null;cam.tx=RUANG.x;cam.tz=RUANG.z-.3;cam.v=innerWidth>=900?8.2:9.5;
-  panelRuang(p,war,i);perbaruiZona();muatDetail();
+  panelRuang(p,war,i);perbaruiZona();muatDetail();muatChat();
 }
 /* Detail proyek baca-saja (GET /api/proyek/<slug>/detail): Status, checklist NEXT, link. Respons ruang lama (‹ › cepat)
    diabaikan. Gagal / tanpa server = bagian detail berisi alasan, sisa ruang tetap jalan. */
@@ -977,6 +996,97 @@ function isiDetail(){
   const isi=[ds,dn];if(tl.children.length)isi.push(tl);else isi.push(buat('div','alasan','Belum ada link atau folder lokal di repos.md'));
   el.append(...isi);
 }
+/* Chat "penjaga ruang" (GET/POST /api/proyek/<slug>/chat): agen tanpa alat, konteks hanya INDEX + STATE + NEXT
+   proyek ini. Riwayat disimpan per ruang di server; ‹ › pindah ruang = pindah riwayat. Jawaban yang datang setelah
+   ruangnya ditinggal diabaikan di sini (tetap tersimpan di server, muncul saat kembali). Semua teks lewat textContent. */
+const kbId=n=>((+n||0)/1024).toFixed(1).replace('.',',')+' KB';
+const usdChat=n=>'$'+(+n||0).toFixed(3).replace('.',',');
+function bangunChat(el){
+  const buat=(tag,cls,teks)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(teks!=null)e.textContent=teks;return e;};
+  const kp=buat('div','kepala');kp.append(buat('span','lbl','Penjaga ruang'),buat('span','hapusw'));
+  const kt=buat('div','ktx');kt.id='ruangKtx';
+  const rw=buat('div','riwayat');rw.id='ruangRiwayat';rw.setAttribute('role','log');rw.setAttribute('aria-label','Riwayat chat penjaga ruang');
+  const mg=buat('div','mengetik','Penjaga mengetik…');mg.id='ruangMengetik';mg.hidden=true;mg.setAttribute('aria-live','polite');
+  const gl=buat('div','alasan galat');gl.id='ruangGalat';gl.hidden=true;gl.setAttribute('role','status');
+  const kr=buat('div','kirim'),iw=buat('div','inwrap');
+  const ta=buat('textarea','grow');ta.id='ruangIn';ta.rows=1;ta.placeholder='Tanya soal proyek ini, mis. "langkah berikutnya apa?"';
+  ta.setAttribute('aria-label','Pesan ke penjaga ruang');ta.setAttribute('aria-describedby','ruangHit');
+  const ht=buat('div','hitung');ht.id='ruangHit';ht.hidden=true;ht.setAttribute('aria-live','polite');
+  const bt=buat('button','btn sm','Kirim');bt.type='button';bt.id='ruangKirim';
+  iw.append(ta,ht);kr.append(iw,bt);
+  ta.addEventListener('input',cekChatRuang);
+  ta.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();kirimChatRuang();}});
+  bt.addEventListener('click',kirimChatRuang);
+  el.append(kp,kt,rw,mg,gl,kr);
+}
+function cekChatRuang(){
+  const ta=$('ruangIn'),b=$('ruangKirim'),r=PRJ.ruang;if(!ta||!b||!r)return false;
+  const lewat=cekPanjang(ta,$('ruangHit'),'chat');tumbuh(ta);const c=r.chat;
+  b.disabled=lewat||!BR.on||!!c.gagal||!!c.tunggu||c.sibuk;
+  b.title=lewat?'Pesan melebihi batas '+fmtN(batasInput('chat'))+' karakter':c.tunggu||c.sibuk?'Penjaga masih menjawab':'';
+  return lewat;
+}
+function gulirChat(){const el=$('ruang');if(el)el.scrollTop=el.scrollHeight;}
+function muatChat(){
+  const r=PRJ.ruang;if(!r)return;const c=r.chat;
+  if(!BR.on){c.muat=false;c.gagal=location.protocol==='file:'?'Kantor dibuka dari file, tanpa server: chat penjaga tidak tersedia.':'Mode Simulasi: chat penjaga hanya ada lewat server kantor (mode Laptop).';isiChat();return;}
+  isiChat();
+  api('proyek/'+encodeURIComponent(r.p.slug)+'/chat').then(j=>{if(PRJ.ruang!==r)return;
+      c.muat=false;c.riwayat=Array.isArray(j.riwayat)?j.riwayat:[];c.konteks=j.konteks||null;c.sibuk=!!j.sibuk;isiChat();
+      if(c.sibuk)setTimeout(()=>{if(PRJ.ruang===r)muatChat();},2500);}, // jawaban pesan sebelumnya belum masuk: cek lagi
+    e=>{if(PRJ.ruang!==r)return;c.muat=false;c.gagal='Chat tidak bisa dimuat: '+e.message;isiChat();});
+}
+function kirimChatRuang(){
+  const r=PRJ.ruang,ta=$('ruangIn');if(!r||!ta)return;const c=r.chat;
+  if(!BR.on||c.gagal||c.tunggu||c.sibuk)return;
+  const m=ta.value.trim();if(!m)return;
+  if(cekChatRuang()){toast('Pesan melebihi batas '+fmtN(batasInput('chat'))+' karakter. Pendekkan dulu.',true);return;}
+  c.tunggu=m;c.galat='';c.konfirm=false;isiChat();gulirChat();
+  api('proyek/'+encodeURIComponent(r.p.slug)+'/chat',{pesan:m}).then(j=>{
+    c.tunggu=null;if(PRJ.ruang!==r)return;
+    if(Array.isArray(j.riwayat))c.riwayat=j.riwayat;if(j.konteks)c.konteks=j.konteks;
+    const t=$('ruangIn');if(t&&t.value.trim()===m)t.value='';
+    isiChat();gulirChat();
+  },e=>{c.tunggu=null;if(PRJ.ruang!==r)return;c.galat=e.message;isiChat();}); // teks pesan tetap di kotak, bisa dikirim ulang
+}
+function hapusChatRuang(){
+  const r=PRJ.ruang;if(!r)return;const c=r.chat;
+  api('proyek/'+encodeURIComponent(r.p.slug)+'/chat-hapus',{}).then(()=>{if(PRJ.ruang!==r)return;c.riwayat=[];c.konfirm=false;c.galat='';isiChat();toast('Riwayat chat ruang ini dihapus');},
+    e=>{if(PRJ.ruang!==r)return;c.konfirm=false;isiChat();toast(e.message,true);});
+}
+// Jawaban penjaga: **tebal** dan `kode` jadi <b>/<code> lewat createElement + textContent (bukan innerHTML); sisanya teks polos.
+function teksJawaban(el,t){String(t||'').split(/(\*\*[^*\n]+\*\*|`[^`\n]+`)/).forEach(x=>{
+  if(/^\*\*[^*\n]+\*\*$/.test(x)){const b=document.createElement('b');b.textContent=x.slice(2,-2);el.append(b);}
+  else if(/^`[^`\n]+`$/.test(x)){const k=document.createElement('code');k.textContent=x.slice(1,-1);el.append(k);}
+  else if(x)el.append(x);});}
+function isiChat(){
+  const r=PRJ.ruang,box=r&&$('ruangChat');if(!box)return;const c=r.chat;
+  const buat=(tag,cls,teks)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(teks!=null)e.textContent=teks;return e;};
+  const tombol=(teks,fn,cls)=>{const b=buat('button','btn sm '+(cls||'ghost'),teks);b.type='button';b.addEventListener('click',fn);return b;};
+  // Konteks yang dikirim ke penjaga + tanda terpotong
+  const kt=$('ruangKtx');kt.replaceChildren();
+  if(c.konteks){const s=c.konteks.state,n=c.konteks.next;
+    kt.append('Konteks: STATE '+(s.ada?kbId(s.byte):'tidak ada')+' · NEXT '+(n.ada?kbId(n.byte):'tidak ada'));
+    const pot=[s.terpotong&&'STATE dipotong di '+kbId(s.batas)+' dari '+kbId(s.asli),n.terpotong&&'NEXT dipotong di '+kbId(n.batas)+' dari '+kbId(n.asli)].filter(Boolean);
+    if(pot.length)kt.append(buat('br'),buat('b','','⚠ Terpotong: '+pot.join('; ')+'. Penjaga tidak melihat sisanya.'));}
+  else if(c.muat)kt.textContent='Memuat konteks…';
+  // Riwayat
+  const rw=$('ruangRiwayat');rw.replaceChildren();
+  c.riwayat.forEach(m=>{const kamu=m.dari==='kamu',d=buat('div','psn '+(kamu?'kamu':'penjaga'));if(kamu)d.textContent=m.teks;else teksJawaban(d,m.teks);
+    if(!kamu&&m.biaya!=null)d.append(buat('span','biaya','setara '+usdChat(m.biaya)+(m.token?' · '+fmtN(Math.round(m.token/100)/10)+'k token':'')));rw.append(d);});
+  if(c.tunggu)rw.append(buat('div','psn kamu tunda',c.tunggu));
+  if(!c.riwayat.length&&!c.tunggu&&!c.muat&&!c.gagal)rw.append(buat('div','alasan','Belum ada obrolan. Penjaga hanya tahu baris INDEX, STATE.md, dan NEXT.md proyek ini, dan tidak bisa mengubah file. Tiap pesan memakai kuota akun agen.'));
+  $('ruangMengetik').hidden=!(c.tunggu||c.sibuk);
+  const gl=$('ruangGalat'),gt=c.gagal||c.galat||'';gl.textContent=gt;gl.hidden=!gt;
+  // Hapus riwayat, dengan konfirmasi di tempat
+  const hw=box.querySelector('.hapusw');hw.replaceChildren();
+  if(c.riwayat.length&&BR.on&&!c.gagal&&!c.tunggu&&!c.sibuk){
+    if(c.konfirm)hw.append(buat('span','','Hapus '+c.riwayat.length+' pesan?'),tombol('Ya, hapus',hapusChatRuang,'danger'),tombol('Batal',()=>{c.konfirm=false;isiChat();}));
+    else hw.append(tombol('Hapus riwayat',()=>{c.konfirm=true;isiChat();}));
+  }
+  $('ruangIn').disabled=!BR.on||!!c.gagal;
+  cekChatRuang();
+}
 function tutupRuang(tanpaKamera){
   const r=PRJ.ruang;if(!r)return;cutReset(r.g);scene.remove(r.g);buang(r.milik);PRJ.ruang=null;
   const el=$('ruang');el.hidden=true;el.replaceChildren();document.body.classList.remove('di-ruang');
@@ -1001,6 +1111,7 @@ function panelRuang(p,war,i){
   if(p.fase)el.append(buat('div','lbl','Fase'),buat('div','isi',p.fase));
   if(p.ringkasan)el.append(buat('div','lbl','Ringkasan'),buat('div','isi',p.ringkasan));
   const det=buat('div','detail');det.id='ruangDetail';det.setAttribute('aria-live','polite');el.append(det);
+  const ch=buat('section','chat');ch.id='ruangChat';ch.setAttribute('aria-label','Chat penjaga ruang');bangunChat(ch);el.append(ch);
   el.hidden=false;el.scrollTop=0;document.body.classList.add('di-ruang');letakCamctl();
 }
 const diLorong=()=>!PRJ.ruang&&cam.tz>LOR.z0-1;
@@ -1453,7 +1564,9 @@ function renderPane(){
     if(BR.on){const i=BR.info||{};
       h+='<div class="note" style="margin-bottom:14px"><strong>Mode Laptop.</strong> Agen dijalankan Claude Code di laptopmu. Ubah setelan di bawah lewat file config.json di folder server, lalu jalankan ulang server.</div>';
       h+='<div class="group"><h3><span>Akun Claude Code</span><span>maks '+i.maxAgenPerAkun+' agen/akun</span></h3>'+(i.akun||[]).map((n,k)=>'<div class="card"><div class="t">'+esc(n)+'</div><div class="m">'+(i.aktif?i.aktif[k]:0)+' agen sedang jalan</div></div>').join('')+'</div>';
-      h+='<div class="group"><h3><span>Model</span></h3><div class="card"><div class="m">Manajer: <b>'+esc(i.model&&i.model.manajer)+'</b> · Staf: <b>'+esc(i.model&&i.model.staf)+'</b></div></div></div>';
+      const cr=i.chatRuang;
+      h+='<div class="group"><h3><span>Model</span></h3><div class="card"><div class="m">Manajer: <b>'+esc(i.model&&i.model.manajer)+'</b> · Staf: <b>'+esc(i.model&&i.model.staf)+'</b></div>'+
+        (cr?'<div class="m">Chat ruang proyek (penjaga, tanpa alat): <b>'+esc(cr.model)+'</b> · hari ini '+usdChat(cr.hariIni)+(cr.batasHarian?' dari batas harian '+usdId(cr.batasHarian):' · tanpa batas harian')+'</div><div class="m">Ubah lewat modelChat dan batasChatHarian di config.json.</div>':'')+'</div></div>';
       h+='<div class="group"><h3><span>Folder</span></h3><div class="card"><div class="m" style="overflow-wrap:anywhere">Data: '+esc(i.folderData)+'</div><div class="m" style="overflow-wrap:anywhere">Proyek: '+esc(i.folderProyek)+'</div></div></div>';
       h+='<div class="group"><h3><span>Kuota workspace ini</span></h3><div class="card"><div class="m">'+Math.round((W().token||0)/1000)+'k token · setara $'+(W().biaya||0).toFixed(2)+(batasWs(W())?' dari batas $'+batasWs(W()).toFixed(2):' · tanpa batas')+'</div><div class="m">'+rincianHtml(W().rincian)+'</div>'+
         '<div class="row" style="flex-wrap:nowrap"><input id="wsbatas" type="number" min="0" step="0.05" inputmode="decimal" placeholder="'+(i.batasBiaya?'ikut config ($'+i.batasBiaya+')':'ikut config (tanpa batas)')+'" value="'+(W().batas!=null?esc(W().batas):'')+'" aria-label="Batas biaya-setara workspace (USD)" style="flex:1;min-width:0;height:34px;border-radius:10px;border:1px solid var(--line);background:var(--panel-solid);padding:0 10px"><button class="btn ghost sm" data-act="batas-simpan">Simpan batas</button></div><div class="m">Batas biaya-setara (USD) untuk workspace ini. Kosong = ikut config, 0 = tanpa batas. Dicek sebelum tiap panggilan Claude baru.</div><div class="m">Angka dolar adalah perkiraan dari Claude Code. Dengan login Pro kamu tidak ditagih per token, tapi angka ini menunjukkan seberapa cepat kuota terpakai.</div></div></div>';
