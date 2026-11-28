@@ -726,6 +726,7 @@ function detailProyek(slug) {
   }
   const live = cariLive(rb ? rb.sel.slice(1).join(' ') : '', p.fase, s.status);
   return { slug, nama: p.nama, fase: p.fase, status: s.status, statusAlasan: s.alasan, statusTerpotong: !!st.terpotong,
+    stateMtime: st.ada ? +String(st.kunci).split('|')[0] || null : null, nextMtime: nx.ada ? +String(nx.kunci).split('|')[0] || null : null,
     next: bn.butir, nextJenis: bn.jenis, nextAlasan: nx.ada ? null : 'NEXT.md tidak ada', lokal, bisaBukaFolder: bisaBuka, github, githubPrivat, live };
 }
 // Slug dari URL: decode lalu cocokkan ke whitelist. Traversal (.., %2e, %2f, \) di URL mentah = 403.
@@ -771,37 +772,89 @@ function potongBaris(teks, maxByte) {
   for (const b of teks.split('\n')) { const k = Buffer.byteLength(b, 'utf8') + 1; if (n + k > maxByte) break; out.push(b); n += k; }
   return { teks: out.join('\n'), terpotong: true };
 }
+/* Planner ruang (tahap A, keputusan user 28-11): ruang menjalankan workflow vault sendiri. Agen tetap TANPA alat;
+   server menyusun konteks: workflow.md (8 KB) + baris INDEX + STATE.md + NEXT.md + git log -5 repo lokal + mtime.
+   Jawaban boleh berisi blok ```prompt-cc``` (prompt untuk Claude Code, disalin manual) dan ```usulan-vault```
+   (JSON edit STATE/NEXT). Usulan divalidasi dan disimpan SERVER-SIDE; vault baru ditulis setelah ACC per usulan,
+   dan isi yang ditulis selalu dari usulan tersimpan, bukan dari body request web. */
+const BATAS_WORKFLOW = 8 * 1024;
+const BATAS_FILE_TULIS = 1024 * 1024;   // file STATE/NEXT lebih besar dari ini tidak bisa diubah lewat usulan
+const FILE_RUANG = { STATE: 'STATE.md', NEXT: 'NEXT.md' }; // SATU-SATUNYA file vault yang bisa ditulis server
+const BATAS_USULAN = { edit: 10, teks: 8000, alasan: 600, simpan: 30 };
+const DIR_USULAN = path.join(DIR_RUANG, 'usulan'), DIR_BACKUP = path.join(DIR_RUANG, 'backup'), LOG_RUANG = path.join(DIR_RUANG, 'log.jsonl');
+const umurMs = (kunci) => +String(kunci || '').split('|')[0] || null; // kunci bacaVault = mtimeMs|size
+
+// git log repo lokal proyek (path dari repos.md, hanya kalau ada dan di dalam vault). Timeout 5 dtk; gagal = null.
+const CACHE_GIT = new Map();
+function gitLog(dir, n) {
+  if (!dir) return Promise.resolve(null);
+  const k = dir + '|' + n, c = CACHE_GIT.get(k);
+  if (c && Date.now() - c.t < 30000) return Promise.resolve(c.v);
+  return new Promise((resolve) => {
+    let out = '', beres = false;
+    const selesai = (v) => { if (beres) return; beres = true; CACHE_GIT.set(k, { t: Date.now(), v }); resolve(v); };
+    let ch;
+    try {
+      ch = spawn('git', ['--no-optional-locks', '-C', dir, 'log', '-' + n, '--date=short', '--format=%h %ad %s'],
+        { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'], env: Object.assign({}, process.env, { GIT_TERMINAL_PROMPT: '0' }) });
+    } catch (e) { return selesai(null); }
+    const tm = setTimeout(() => { bunuh(ch); selesai(null); }, 5000);
+    ch.stdout.on('data', (d) => { out += d; if (out.length > 20000) bunuh(ch); });
+    ch.on('error', () => { clearTimeout(tm); selesai(null); });
+    ch.on('close', (code) => { clearTimeout(tm); selesai(code === 0 ? out.split(/\r?\n/).filter(Boolean).slice(0, n).map(l => samarkan(l).slice(0, 200)) : null); });
+  });
+}
+const parseCommit = (l) => { const m = /^(\S+) (\d{4}-\d{2}-\d{2}) (.*)$/.exec(l || ''); return m ? { hash: m[1], tgl: m[2], pesan: m[3] } : null; };
+function repoProyek(slug) { const d = detailProyek(slug); return d && d.bisaBukaFolder ? dalamVault(d.lokal) || null : null; }
+
 function konteksRuang(slug) {
   const p = bacaProyek().proyek.find(x => x.slug === slug); if (!p || !slugRuangAman(slug)) return null;
-  const satu = (nama, batas) => {
-    const r = bacaVault(path.join('projects', slug, nama));
-    if (!r.ada) return { ada: false, ditolak: !!r.ditolak, teks: '', byte: 0, asli: 0, terpotong: false, batas };
+  const satu = (rel, batas) => {
+    const r = bacaVault(rel);
+    if (!r.ada) return { ada: false, ditolak: !!r.ditolak, teks: '', byte: 0, asli: 0, terpotong: false, batas, mtime: null };
     const asli = +String(r.kunci).split('|')[1] || 0;
     const t = potongBaris(samarkan(r.teks.replace(/\r\n/g, '\n')).trimEnd(), batas);
-    return { ada: true, teks: t.teks, byte: Buffer.byteLength(t.teks, 'utf8'), asli, terpotong: t.terpotong || !!r.terpotong, batas };
+    return { ada: true, teks: t.teks, byte: Buffer.byteLength(t.teks, 'utf8'), asli, terpotong: t.terpotong || !!r.terpotong, batas, mtime: umurMs(r.kunci) };
   };
-  return { p, state: satu('STATE.md', BATAS_KONTEKS.state), next: satu('NEXT.md', BATAS_KONTEKS.next) };
+  return { p, workflow: satu('workflow.md', BATAS_WORKFLOW), state: satu(path.join('projects', slug, 'STATE.md'), BATAS_KONTEKS.state),
+    next: satu(path.join('projects', slug, 'NEXT.md'), BATAS_KONTEKS.next), git: null };
 }
-const infoKonteks = (k) => { const f = (x) => ({ ada: x.ada, byte: x.byte, asli: x.asli, batas: x.batas, terpotong: x.terpotong }); return { state: f(k.state), next: f(k.next) }; };
+const infoKonteks = (k) => {
+  const f = (x) => ({ ada: x.ada, byte: x.byte, asli: x.asli, batas: x.batas, terpotong: x.terpotong, mtime: x.mtime });
+  return { workflow: f(k.workflow), state: f(k.state), next: f(k.next), git: k.git ? k.git.length : 0 };
+};
 function sistemRuang(k) {
   const kb = (n) => (n / 1024).toFixed(0) + ' KB';
+  const tgl = (ms) => ms ? new Date(ms).toISOString().slice(0, 10) : '-';
   const bagian = (label, x) => x.ada
     ? '<' + label + (x.terpotong ? ' terpotong="ya: hanya ' + kb(x.batas) + ' pertama dari ' + kb(x.asli) + ', sisanya tidak kamu lihat"' : '') + '>\n' + x.teks + '\n</' + label + '>'
     : '<' + label + '>\n(file tidak ada)\n</' + label + '>';
-  return 'Kamu penjaga ruang proyek "' + k.p.nama + '" di Kantor Agen.\n' +
+  return 'Kamu planner proyek "' + k.p.nama + '" di Kantor Agen, bekerja sesuai workflow.md di bawah (peran Claude App = planner).\n' +
     'Aturan:\n' +
-    '- Jawab HANYA dari konteks di bawah (baris INDEX, STATE.md, dan NEXT.md proyek ini). Itu satu-satunya yang kamu tahu.\n' +
-    '- Kalau jawabannya tidak ada di konteks, bilang terus terang kamu tidak tahu, lalu sarankan tanya planner. Jangan menebak atau mengarang.\n' +
-    '- Kamu tidak punya alat dan tidak bisa membuka, membaca, membuat, atau mengubah file apa pun. Kalau diminta mengubah sesuatu, bilang itu di luar kemampuanmu.\n' +
-    '- Bahasa Indonesia kasual, ringkas (biasanya maks 120 kata). Sapa pemilik proyek dengan "kamu".\n' +
-    (k.state.terpotong || k.next.terpotong ? '- Sebagian konteks terpotong (lihat atribut terpotong). Kalau pertanyaannya mungkin ada di bagian yang terpotong, sebutkan itu.\n' : '') +
-    '\nKonteks:\n<index>\nProyek: ' + k.p.nama + '\nFase: ' + (k.p.fase || '-') + '\nRingkasan: ' + (k.p.ringkasan || '-') + '\n</index>\n\n' +
-    bagian('state_md', k.state) + '\n\n' + bagian('next_md', k.next);
+    '- Fakta proyek HANYA dari konteks di bawah (workflow.md, baris INDEX, STATE.md, NEXT.md, git log, tanggal file). Kalau tidak ada di konteks, bilang tidak tahu. Jangan mengarang.\n' +
+    '- Kamu tidak punya alat dan tidak bisa membaca kode atau file lain. Kalau butuh fakta dari kode, suruh Claude Code mengecek lewat prompt.\n' +
+    '- Ikuti workflow.md: sparring partner yang jujur, SATU prompt Claude Code pada satu waktu, akhiri jawaban dengan prompt Claude Code ATAU aksi user.\n' +
+    '- Bahasa Indonesia kasual, ringkas. Sapa pemilik proyek dengan "kamu".\n' +
+    (k.state.terpotong || k.next.terpotong || k.workflow.terpotong ? '- Sebagian konteks terpotong (lihat atribut terpotong). Sebutkan kalau jawabannya mungkin ada di bagian yang terpotong.\n' : '') +
+    '\nFormat khusus (dibaca server, tulis persis seperti ini):\n' +
+    '- Prompt untuk Claude Code: SATU blok berpagar dengan bahasa prompt-cc, yaitu baris ```prompt-cc lalu isi prompt lalu baris ```. Maks satu per jawaban. Jangan pakai ```text atau blockquote untuk prompt.\n' +
+    '- Usulan update catatan vault (STATE.md/NEXT.md proyek ini SAJA): SATU blok berpagar dengan bahasa usulan-vault berisi JSON:\n' +
+    '  {"alasan":"kenapa diubah","edit":[{"file":"STATE","cari":"teks persis dari file","ganti":"teks baru"}]}\n' +
+    '  "file" hanya "STATE" atau "NEXT". "cari" disalin PERSIS dari isi file di konteks (termasuk spasi dan tanda baca) dan cukup panjang supaya muncul tepat sekali; baris utuh paling aman. "cari" kosong hanya untuk NEXT = "ganti" ditambahkan di akhir file. Ikuti aturan bentuk STATE di workflow.md (keputusan + alasan + status sekarang, bukan changelog).\n' +
+    '  Usulan baru ditulis setelah pemilik menekan ACC; jangan bilang sudah dicatat sebelum itu. Buat usulan hanya kalau pemilik memintanya atau jelas perlu.\n' +
+    '\nHari ini: ' + tglLokal() + '. STATE.md diubah: ' + tgl(k.state.mtime) + '. NEXT.md diubah: ' + tgl(k.next.mtime) + '.\n' +
+    '\nKonteks:\n' + bagian('workflow_md', k.workflow) + '\n\n<index>\nProyek: ' + k.p.nama + '\nFase: ' + (k.p.fase || '-') + '\nRingkasan: ' + (k.p.ringkasan || '-') + '\n</index>\n\n' +
+    bagian('state_md', k.state) + '\n\n' + bagian('next_md', k.next) + '\n\n' +
+    '<git_log_terakhir>\n' + (k.git && k.git.length ? k.git.join('\n') : '(tidak ada: repo lokal tidak tercatat, di luar vault, atau git gagal)') + '\n</git_log_terakhir>';
 }
-function promptRuang(riwayat, pesan) {
+const RE_BLOK = /```([A-Za-z-]*)[^\S\n]*\n([\s\S]*?)\n?```/g;
+function ambilBlok(teks) { const out = []; let m; RE_BLOK.lastIndex = 0; while ((m = RE_BLOK.exec(teks))) out.push({ jenis: m[1].toLowerCase(), isi: m[2], mulai: m.index, akhir: RE_BLOK.lastIndex }); return out; }
+function promptRuang(riwayat, pesan, usulan) {
   const giliran = riwayat.slice(-RIWAYAT_KIRIM * 2);
   while (giliran.length && giliran[0].dari !== 'kamu') giliran.shift(); // mulai dari pertanyaan
-  const r = giliran.map(m => (m.dari === 'kamu' ? 'Pemilik: ' : 'Penjaga: ') + m.teks).join('\n\n');
+  const status = (id) => { const u = usulan.find(x => x.id === id); return u ? u.status : 'tidak ada'; };
+  const ringkas = (m) => m.teks.replace(RE_BLOK, (s, j) => j.toLowerCase() === 'usulan-vault' ? '[usulan-vault ' + (m.usulan || '?') + ': ' + status(m.usulan) + ']' : s);
+  const r = giliran.map(m => (m.dari === 'kamu' ? 'Pemilik: ' : m.dari === 'sistem' ? 'Sistem: ' : 'Planner: ') + (m.dari === 'penjaga' ? ringkas(m) : m.teks)).join('\n\n');
   return (r ? 'Obrolan sebelumnya (paling lama di atas):\n\n' + r + '\n\n---\n\n' : '') + 'Pesan baru dari pemilik: ' + pesan;
 }
 // Folder kerja agen chat: harus ada, kosong, dan tidak ada CLAUDE.md di folder itu maupun induknya.
@@ -814,29 +867,200 @@ function siapkanCwdRuang() {
   }
   return null;
 }
+
+/* ---- File vault yang boleh ditulis: projects/<slug>/STATE.md dan NEXT.md, TIDAK ada yang lain ----
+   Path dibangun dari folder vault + slug whitelist + nama dari FILE_RUANG (bukan dari input). Folder proyek dan
+   file tidak boleh symlink/junction; realpath harus sama persis dengan path yang dibangun. */
+function fileRuang(slug, kunci) {
+  if (!Object.prototype.hasOwnProperty.call(FILE_RUANG, kunci) || !slugRuangAman(slug)) return null;
+  if (!bacaProyek().proyek.some(x => x.slug === slug)) return null;
+  const root = folderVault(); if (!root) return null;
+  let rRoot, rDir; try { rRoot = fs.realpathSync.native(root); rDir = fs.realpathSync.native(path.join(root, 'projects', slug)); } catch (e) { return null; }
+  if (!sama(rDir, path.join(rRoot, 'projects', slug))) return null;
+  const full = path.join(rDir, FILE_RUANG[kunci]);
+  let ls; try { ls = fs.lstatSync(full); } catch (e) { return { full, ada: false }; }
+  if (ls.isSymbolicLink() || !ls.isFile()) return null;
+  let r; try { r = fs.realpathSync.native(full); } catch (e) { return null; }
+  if (!sama(r, full)) return null;
+  return { full, ada: true, size: ls.size };
+}
+const sha256 = (buf) => crypto.createHash('sha256').update(buf).digest('hex');
+// Isi penuh kedua file (bukan versi terpotong konteks). LF dinormalisasi untuk pencocokan; gaya baris + BOM diingat.
+function bacaFileRuang(slug) {
+  const out = {};
+  for (const k of Object.keys(FILE_RUANG)) {
+    const f = fileRuang(slug, k);
+    if (!f) { out[k] = { ditolak: true, hash: 'ditolak' }; continue; }
+    if (!f.ada) { out[k] = { ada: false, hash: 'tidak-ada', full: f.full }; continue; }
+    if (f.size > BATAS_FILE_TULIS) { out[k] = { ada: true, besar: true, hash: 'besar:' + f.size, full: f.full }; continue; }
+    const buf = fs.readFileSync(f.full); let t = buf.toString('utf8'); const bom = t.charCodeAt(0) === 0xFEFF; if (bom) t = t.slice(1);
+    out[k] = { ada: true, full: f.full, buf, hash: sha256(buf), bom, crlf: t.includes('\r\n'), teks: t.replace(/\r\n/g, '\n') };
+  }
+  return out;
+}
+function hitungMuncul(teks, cari) { let n = 0, i = -1; while ((i = teks.indexOf(cari, i + 1)) >= 0) { n++; if (n > 1) break; } return n; }
+// Diff satu edit: baris sama di awal/akhir dibuang, sisakan 2 baris konteks. j: ' ' konteks, '-' hapus, '+' tambah.
+function diffBaris(lama, baru) {
+  const a = lama.split('\n'), b = baru.split('\n'); let p = 0, s = 0;
+  while (p < a.length && p < b.length && a[p] === b[p]) p++;
+  while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
+  const K = 2, MAX = 80, out = [];
+  const potong = (arr, j) => { arr.slice(0, MAX).forEach(t => out.push({ j, t })); if (arr.length > MAX) out.push({ j, t: '… (' + (arr.length - MAX) + ' baris lagi)' }); };
+  a.slice(Math.max(0, p - K), p).forEach(t => out.push({ j: ' ', t }));
+  potong(a.slice(p, a.length - s), '-'); potong(b.slice(p, b.length - s), '+');
+  a.slice(a.length - s, Math.min(a.length, a.length - s + K)).forEach(t => out.push({ j: ' ', t }));
+  return { mulai: Math.max(0, p - K) + 1, baris: out };
+}
+// Terapkan daftar edit ke teks (LF) di memori. Tiap "cari" harus muncul PERSIS sekali di teks saat itu.
+function jalankanEdit(asal, edit) {
+  const hasil = {}, diff = [];
+  for (const k of Object.keys(FILE_RUANG)) hasil[k] = asal[k];
+  if (!Array.isArray(edit) || !edit.length) return { ok: false, galat: 'Usulan tanpa edit' };
+  if (edit.length > BATAS_USULAN.edit) return { ok: false, galat: 'Terlalu banyak edit: ' + edit.length + ' (maks ' + BATAS_USULAN.edit + ')' };
+  for (let i = 0; i < edit.length; i++) {
+    const e = edit[i] || {}, no = 'Edit #' + (i + 1) + ': ', f = e.file;
+    if (typeof f !== 'string' || !Object.prototype.hasOwnProperty.call(FILE_RUANG, f)) return { ok: false, galat: no + 'file "' + String(f).slice(0, 80) + '" tidak diizinkan. Hanya "STATE" atau "NEXT" proyek ini.' };
+    if (typeof e.cari !== 'string' || typeof e.ganti !== 'string') return { ok: false, galat: no + '"cari" dan "ganti" harus teks' };
+    if (e.cari.length > BATAS_USULAN.teks || e.ganti.length > BATAS_USULAN.teks) return { ok: false, galat: no + 'teks lebih dari ' + BATAS_USULAN.teks + ' karakter' };
+    const lama = hasil[f];
+    if (typeof lama !== 'string') return { ok: false, galat: no + FILE_RUANG[f] + ' tidak ada, terlalu besar, atau ditolak' };
+    const cari = e.cari.replace(/\r\n/g, '\n'), ganti = e.ganti.replace(/\r\n/g, '\n');
+    let baru;
+    if (!cari) {
+      if (f !== 'NEXT') return { ok: false, galat: no + '"cari" kosong hanya boleh untuk NEXT (tambah di akhir file)' };
+      if (!ganti.trim()) return { ok: false, galat: no + 'tidak ada teks yang ditambahkan' };
+      baru = lama.replace(/\n*$/, '\n') + ganti.replace(/^\n+/, '').replace(/\n*$/, '\n');
+    } else {
+      const n = hitungMuncul(lama, cari);
+      if (n !== 1) return { ok: false, galat: no + 'teks "cari" ' + (n ? 'muncul lebih dari sekali' : 'tidak ada') + ' di ' + FILE_RUANG[f] + ' (harus persis sekali): "' + cuplikan(cari.replace(/\n/g, '⏎'), 80) + '"' };
+      const i0 = lama.indexOf(cari); baru = lama.slice(0, i0) + ganti + lama.slice(i0 + cari.length);
+    }
+    if (baru === lama) return { ok: false, galat: no + 'tidak mengubah apa pun' };
+    if (Buffer.byteLength(baru, 'utf8') > BATAS_FILE_TULIS) return { ok: false, galat: no + FILE_RUANG[f] + ' jadi lebih dari 1 MB' };
+    diff.push(Object.assign({ file: FILE_RUANG[f] }, diffBaris(lama, baru)));
+    hasil[f] = baru;
+  }
+  return { ok: true, hasil, diff };
+}
+const pathUsulan = (slug) => path.join(DIR_USULAN, slug + '.json');
+function bacaUsulan(slug) { try { const j = JSON.parse(fs.readFileSync(pathUsulan(slug), 'utf8')); return Array.isArray(j.usulan) ? j.usulan : []; } catch (e) { return []; } }
+function simpanUsulan(slug, daftar) {
+  fs.mkdirSync(DIR_USULAN, { recursive: true });
+  const f = pathUsulan(slug), tmp = f + '.' + uid() + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify({ slug, usulan: daftar.slice(-BATAS_USULAN.simpan) }, null, 1)); fs.renameSync(tmp, f);
+}
+const usulanPublik = (u) => ({ id: u.id, t: u.t, alasan: u.alasan, status: u.status, galat: u.galat || null, diff: u.diff || [], file: u.file || [], tStatus: u.tStatus || null });
+function catatLogRuang(baris) { try { fs.mkdirSync(DIR_RUANG, { recursive: true }); fs.appendFileSync(LOG_RUANG, JSON.stringify(Object.assign({ t: new Date().toISOString() }, baris)) + '\n'); } catch (e) {} }
+// Dari blok ```usulan-vault``` jawaban planner: validasi terhadap isi file SAAT INI, simpan (valid atau tidak).
+function buatUsulan(slug, isiBlok) {
+  const u = { id: crypto.randomBytes(8).toString('hex'), t: Date.now(), alasan: '', edit: [], status: 'tidak-valid', galat: null, diff: [], file: [] };
+  let j = null; try { j = JSON.parse(isiBlok.trim()); } catch (e) { u.galat = 'JSON usulan tidak terbaca: ' + e.message.slice(0, 120); }
+  if (j && (typeof j !== 'object' || Array.isArray(j))) { u.galat = 'Usulan harus objek JSON {"alasan","edit"}'; j = null; }
+  if (j) {
+    u.alasan = String(j.alasan || '').slice(0, BATAS_USULAN.alasan);
+    // Hanya kunci file/cari/ganti yang disimpan; kunci lain (path, dsb.) dibuang.
+    u.edit = Array.isArray(j.edit) ? j.edit.slice(0, BATAS_USULAN.edit + 1).map(e => ({ file: e && e.file, cari: e && e.cari, ganti: e && e.ganti })) : [];
+    const sekarang = bacaFileRuang(slug), asal = {};
+    for (const k of Object.keys(FILE_RUANG)) asal[k] = sekarang[k].teks;
+    u.hash = {}; for (const k of Object.keys(FILE_RUANG)) u.hash[k] = sekarang[k].hash;
+    const r = jalankanEdit(asal, u.edit);
+    if (r.ok) { u.status = 'menunggu'; u.diff = r.diff; u.file = [...new Set(r.diff.map(d => d.file))]; }
+    else u.galat = r.galat;
+  }
+  const daftar = bacaUsulan(slug); daftar.push(u); simpanUsulan(slug, daftar);
+  return u;
+}
+function ubahStatusUsulan(slug, id, status, galat) {
+  const daftar = bacaUsulan(slug), u = daftar.find(x => x.id === id); if (!u) return null;
+  u.status = status; u.tStatus = Date.now(); if (galat) u.galat = galat; simpanUsulan(slug, daftar); return u;
+}
+const stempel = () => new Date().toISOString().replace(/[:.]/g, '-');
+// ACC: hash kedua file harus sama dengan saat usulan; cadangkan versi lama; tulis ke file sementara lalu rename.
+function terapkanUsulan(slug, id, siapa) {
+  const u = bacaUsulan(slug).find(x => x.id === id);
+  if (!u) return { kode: 404, error: 'Usulan tidak ada' };
+  if (u.status !== 'menunggu') return { kode: 409, error: 'Usulan ini sudah ' + u.status + '. Tiap usulan hanya bisa dipakai sekali.', usulan: usulanPublik(u) };
+  const sekarang = bacaFileRuang(slug);
+  const berubah = Object.keys(FILE_RUANG).filter(k => sekarang[k].hash !== (u.hash || {})[k]);
+  if (berubah.length) {
+    const v = ubahStatusUsulan(slug, id, 'kedaluwarsa', 'File berubah sejak usulan dibuat (' + berubah.map(k => FILE_RUANG[k]).join(', ') + '). Tidak ada yang ditulis; minta usulan ulang.');
+    catatLogRuang(Object.assign({ aksi: 'tolak-409', slug, id, file: berubah.map(k => FILE_RUANG[k]) }, siapa));
+    return { kode: 409, error: 'File berubah sejak usulan dibuat (' + berubah.map(k => FILE_RUANG[k]).join(', ') + '). Tidak ada yang ditulis; minta usulan ulang.', usulan: usulanPublik(v) };
+  }
+  const asal = {}; for (const k of Object.keys(FILE_RUANG)) asal[k] = sekarang[k].teks;
+  const r = jalankanEdit(asal, u.edit);
+  if (!r.ok) { const v = ubahStatusUsulan(slug, id, 'tidak-valid', r.galat); return { kode: 409, error: r.galat, usulan: usulanPublik(v) }; }
+  const kunci = Object.keys(FILE_RUANG).filter(k => r.hasil[k] !== asal[k]);
+  const waktu = stempel(), dirB = path.join(DIR_BACKUP, slug), cadangan = [], tmp = {};
+  try {
+    fs.mkdirSync(dirB, { recursive: true });
+    for (const k of kunci) { const b = path.join(dirB, waktu + '-' + FILE_RUANG[k]); fs.writeFileSync(b, sekarang[k].buf, { flag: 'wx' }); cadangan.push(b); }
+    for (const k of kunci) {
+      const f = fileRuang(slug, k); if (!f || !f.ada || !sama(f.full, sekarang[k].full)) throw new Error(FILE_RUANG[k] + ' ditolak saat menulis');
+      let t = r.hasil[k]; if (sekarang[k].crlf) t = t.replace(/\n/g, '\r\n'); if (sekarang[k].bom) t = '﻿' + t;
+      tmp[k] = f.full + '.kantor-' + uid() + '.tmp'; fs.writeFileSync(tmp[k], t, { flag: 'wx' });
+    }
+  } catch (e) {
+    for (const k of Object.keys(tmp)) try { fs.unlinkSync(tmp[k]); } catch (x) {}
+    return { kode: 500, error: 'Gagal menyiapkan tulisan, vault tidak diubah: ' + e.message };
+  }
+  const sudah = [];
+  try { for (const k of kunci) { fs.renameSync(tmp[k], sekarang[k].full); sudah.push(k); } }
+  catch (e) { // semua atau tidak sama sekali: kembalikan file yang sudah diganti dari cadangan
+    for (const k of sudah) try { fs.writeFileSync(sekarang[k].full, sekarang[k].buf); } catch (x) {}
+    for (const k of kunci) try { fs.unlinkSync(tmp[k]); } catch (x) {}
+    return { kode: 500, error: 'Gagal menulis, perubahan dibatalkan: ' + e.message };
+  }
+  const v = ubahStatusUsulan(slug, id, 'diterapkan');
+  const file = kunci.map(k => FILE_RUANG[k]);
+  catatLogRuang(Object.assign({ aksi: 'terapkan', slug, id, file, alasan: cuplikan(u.alasan || '', 200), backup: cadangan }, siapa));
+  const riw = bacaRiwayat(slug); riw.push({ dari: 'sistem', teks: 'Usulan diterapkan ke ' + file.join(' dan ') + ' (versi lama dicadangkan). ' + (u.alasan ? 'Alasan: ' + cuplikan(u.alasan, 200) : ''), t: Date.now() }); simpanRiwayat(slug, riw);
+  return { kode: 200, ok: true, file, backup: cadangan, usulan: usulanPublik(v), riwayat: bacaRiwayat(slug) };
+}
+function tolakUsulan(slug, id, siapa) {
+  const u = bacaUsulan(slug).find(x => x.id === id);
+  if (!u) return { kode: 404, error: 'Usulan tidak ada' };
+  if (u.status !== 'menunggu') return { kode: 409, error: 'Usulan ini sudah ' + u.status + '.', usulan: usulanPublik(u) };
+  const v = ubahStatusUsulan(slug, id, 'ditolak');
+  catatLogRuang(Object.assign({ aksi: 'tolak', slug, id, alasan: cuplikan(u.alasan || '', 200) }, siapa));
+  return { kode: 200, ok: true, usulan: usulanPublik(v) };
+}
+function petaUsulan(slug, riwayat) {
+  const ids = new Set(riwayat.map(m => m.usulan).filter(Boolean)), out = {};
+  for (const u of bacaUsulan(slug)) if (ids.has(u.id)) out[u.id] = usulanPublik(u);
+  return out;
+}
+
 async function chatRuang(slug, pesan) {
   const key = 'ruang:' + slug;
-  if (running.has(key)) return { kode: 409, error: 'Penjaga ruang ini masih menjawab pesan sebelumnya. Tunggu sebentar.' };
+  if (running.has(key)) return { kode: 409, error: 'Planner ruang ini masih menjawab pesan sebelumnya. Tunggu sebentar.' };
   if (akunAktif()[0] >= CFG.maxAgenPerAkun) return { kode: 409, error: 'Semua slot agen akun ' + infoAkun(0).nama + ' sedang dipakai (maks ' + CFG.maxAgenPerAkun + '). Coba lagi sebentar.' };
   const batas = +CFG.batasChatHarian || 0;
   if (batas > 0 && biayaHarian() >= batas) return { kode: 429, error: 'Batas biaya chat ruang hari ini tercapai ($' + biayaHarian().toFixed(2) + ' dari $' + batas.toFixed(2) + ' biaya-setara). Coba lagi besok, atau naikkan batasChatHarian di config.json.' };
   const k = konteksRuang(slug); if (!k) return { kode: 404, error: 'Proyek tidak ada di INDEX' };
   const cw = siapkanCwdRuang(); if (cw) return { kode: 500, error: cw };
+  k.git = await gitLog(repoProyek(slug), 5);
   const riwayat = bacaRiwayat(slug);
   const sesi = { slug };
   const r = await runClaude({ key, w: null, akun: 0, model: CFG.modelChat || 'sonnet', maxTurns: MAX_TURNS_RUANG, peran: 'ruang',
-    system: sistemRuang(k), prompt: promptRuang(riwayat, pesan), ruang: { cwd: CWD_RUANG, sesi } });
+    system: sistemRuang(k), prompt: promptRuang(riwayat, pesan, bacaUsulan(slug)), ruang: { cwd: CWD_RUANG, sesi } });
   tambahHarian(r.biaya); broadcast();
   const dasar = { konteks: infoKonteks(k), alat: sesi.alat || null, mcp: sesi.mcp || null, biaya: r.biaya, hariIni: biayaHarian(), batasHarian: batas };
   if (r.login) { const ak = infoAkun(0); return Object.assign(dasar, { kode: 503, login: true, error: 'Akun agen belum login: ' + ak.nama + ' (configDir ' + ak.configDir + '). Login (PowerShell): $env:CLAUDE_CONFIG_DIR="' + ak.configDir + '"; claude  lalu ketik /login.' }); }
-  if (r.error || !r.text) return Object.assign(dasar, { kode: 502, error: 'Penjaga gagal menjawab: ' + (r.error || 'jawaban kosong') });
-  const t = Date.now(), baru = riwayat.concat([{ dari: 'kamu', teks: pesan, t }, { dari: 'penjaga', teks: r.text, t: Date.now(), biaya: r.biaya, token: r.token }]);
+  if (r.error || !r.text) return Object.assign(dasar, { kode: 502, error: 'Planner gagal menjawab: ' + (r.error || 'jawaban kosong') });
+  const jawab = { dari: 'penjaga', teks: r.text, t: Date.now(), biaya: r.biaya, token: r.token };
+  const blokUsulan = ambilBlok(r.text).find(b => b.jenis === 'usulan-vault');
+  if (blokUsulan) jawab.usulan = buatUsulan(slug, blokUsulan.isi).id;
+  const baru = riwayat.concat([{ dari: 'kamu', teks: pesan, t: Date.now() }, jawab]);
   simpanRiwayat(slug, baru);
-  return Object.assign(dasar, { kode: 200, jawaban: r.text, riwayat: baru.slice(-RIWAYAT_SIMPAN) });
+  const riw = baru.slice(-RIWAYAT_SIMPAN);
+  return Object.assign(dasar, { kode: 200, jawaban: r.text, riwayat: riw, usulan: petaUsulan(slug, riw) });
 }
-function infoRuang(slug) {
+async function infoRuang(slug) {
   const k = konteksRuang(slug); if (!k) return null;
-  return { riwayat: bacaRiwayat(slug), konteks: infoKonteks(k), sibuk: running.has('ruang:' + slug), model: CFG.modelChat || 'sonnet',
+  k.git = await gitLog(repoProyek(slug), 5);
+  const riw = bacaRiwayat(slug);
+  return { riwayat: riw, usulan: petaUsulan(slug, riw), konteks: infoKonteks(k), sibuk: running.has('ruang:' + slug), model: CFG.modelChat || 'sonnet',
     hariIni: biayaHarian(), batasHarian: +CFG.batasChatHarian || 0, simpan: RIWAYAT_SIMPAN, kirim: RIWAYAT_KIRIM };
 }
 
@@ -886,11 +1110,12 @@ http.createServer(async (req, res) => {
     if (req.method === 'GET' && p[1] === 'proyek' && !p[2]) return send(res, 200, bacaProyek());
     if (p[1] === 'proyek' && p[2]) {
       const benar = (p[3] === 'detail' && req.method === 'GET') || (p[3] === 'buka-folder' && req.method === 'POST') ||
-        (p[3] === 'chat' && (req.method === 'GET' || req.method === 'POST')) || (p[3] === 'chat-hapus' && req.method === 'POST');
+        (p[3] === 'chat' && (req.method === 'GET' || req.method === 'POST')) || (p[3] === 'chat-hapus' && req.method === 'POST') ||
+        ((p[3] === 'terapkan' || p[3] === 'tolak') && req.method === 'POST');
       if (!benar || p[4]) return send(res, 404, { error: 'Tidak ada' });
       const sl = slugProyek(req, p);
       if (!sl.slug) return send(res, sl.kode, { error: sl.kode === 403 ? 'Ditolak: path tidak valid' : sl.kode === 400 ? 'Slug tidak valid' : 'Proyek tidak ada di INDEX' });
-      if (p[3] === 'chat' && req.method === 'GET') { const i = infoRuang(sl.slug); return i ? send(res, 200, i) : send(res, 404, { error: 'Proyek tidak ada di INDEX' }); }
+      if (p[3] === 'chat' && req.method === 'GET') { const i = await infoRuang(sl.slug); return i ? send(res, 200, i) : send(res, 404, { error: 'Proyek tidak ada di INDEX' }); }
       if (p[3] === 'chat') {
         const b = await body(req); const pesan = String(b.pesan || '').trim();
         if (!pesan) return send(res, 400, { error: 'Pesan kosong' });
@@ -903,8 +1128,20 @@ http.createServer(async (req, res) => {
         try { fs.unlinkSync(pathRiwayat(sl.slug)); } catch (e) {}
         return send(res, 200, { ok: true, riwayat: [] });
       }
+      if (p[3] === 'terapkan' || p[3] === 'tolak') { // ACC / Tolak usulan vault. Isi yang ditulis dari usulan tersimpan, body hanya {id}.
+        const b = await body(req); const id = String(b.id || '');
+        if (!/^[a-f0-9]{16}$/.test(id)) return send(res, 400, { error: 'id usulan tidak valid' });
+        const siapa = { siapa: 'web', ip: req.socket.remoteAddress || '' };
+        const h = p[3] === 'terapkan' ? terapkanUsulan(sl.slug, id, siapa) : tolakUsulan(sl.slug, id, siapa);
+        const kode = h.kode; delete h.kode; return send(res, kode, h);
+      }
       const d = detailProyek(sl.slug); if (!d) return send(res, 404, { error: 'Proyek tidak ada di INDEX' });
-      if (p[3] === 'detail') return send(res, 200, d);
+      if (p[3] === 'detail') { // + commit terakhir repo lokal (hanya kalau path ada dan di dalam vault)
+        const g = d.bisaBukaFolder ? await gitLog(dalamVault(d.lokal), 5) : null;
+        d.commit = g && g.length ? parseCommit(g[0]) : null;
+        d.commitAlasan = d.commit ? null : !d.lokal ? 'Path lokal belum tercatat di repos.md' : !d.bisaBukaFolder ? 'Folder lokal tidak ada atau di luar vault' : 'Bukan repo git, atau git gagal';
+        return send(res, 200, d);
+      }
       if (!d.lokal) return send(res, 404, { error: 'Path lokal proyek belum tercatat di repos.md' });
       if (!d.bisaBukaFolder) return send(res, 403, { error: 'Folder tidak ada atau di luar folder vault: ' + d.lokal });
       if (process.platform !== 'win32') return send(res, 501, { error: 'Buka folder hanya di Windows. Folder: ' + d.lokal });

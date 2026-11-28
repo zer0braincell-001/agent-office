@@ -219,6 +219,30 @@ button.card:hover{border-color:color-mix(in srgb,var(--accent) 50%,var(--line))}
 .ruang .kirim textarea{width:100%;box-sizing:border-box;border-radius:12px;border:1px solid var(--line);background:var(--panel-solid);color:var(--fg);padding:9px 11px;resize:none;font:inherit;font-size:13px}
 .ruang .kirim .btn{flex:none;height:42px}
 .ruang .btn.danger{background:var(--bad);color:#fff}
+.ruang .umur{display:grid;gap:3px;font-size:12px;line-height:1.45}
+.ruang .umur .u{font-weight:600;color:var(--muted)}
+.ruang .umur .u.kuning{color:var(--warn)}.ruang .umur .u.merah{color:var(--bad)}
+.ruang .umur .commit{color:var(--muted);overflow-wrap:anywhere}
+.ruang .psn.sistem{justify-self:center;max-width:100%;background:none;border:1px dashed var(--line);color:var(--muted);font-size:11.5px;text-align:center}
+.ruang .psn pre{white-space:pre-wrap;margin:6px 0;font-family:var(--f-mono);font-size:11.5px;line-height:1.5;overflow-wrap:anywhere}
+.ruang .kartu{display:grid;gap:6px;margin:6px 0;padding:8px;border-radius:10px;border:1px solid var(--line);background:var(--panel-solid);white-space:normal}
+.ruang .kartu .kk{display:flex;align-items:center;justify-content:space-between;gap:6px;flex-wrap:wrap}
+.ruang .kartu .kk .lbl{font-size:10.5px}
+.ruang .kartu pre{margin:0;max-height:260px;overflow:auto;background:var(--chip);border-radius:8px;padding:8px}
+.ruang .kartu .st{font-size:10.5px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;padding:2px 7px;border-radius:999px;background:var(--chip);color:var(--muted)}
+.ruang .kartu .st.menunggu{color:var(--warn)}.ruang .kartu .st.diterapkan{color:var(--ok)}
+.ruang .kartu .st.tidak-valid,.ruang .kartu .st.kedaluwarsa{color:var(--bad)}
+.ruang .kartu .alasanu{font-size:12px;line-height:1.45;overflow-wrap:anywhere}
+.ruang .kartu .galat{font-size:12px;color:var(--bad);overflow-wrap:anywhere}
+.ruang .diff{font-family:var(--f-mono);font-size:11px;line-height:1.45;border-radius:8px;overflow:auto;max-height:280px;background:var(--chip)}
+.ruang .diff .fh{padding:4px 8px;font-weight:700;color:var(--fg);border-bottom:1px solid var(--line)}
+.ruang .diff .dl{display:grid;grid-template-columns:14px 1fr;white-space:pre-wrap;overflow-wrap:anywhere;padding:0 8px 0 4px}
+.ruang .diff .dl .m{font-weight:700;text-align:center;user-select:none}
+.ruang .diff .dl.h .m{color:var(--bad)}.ruang .diff .dl.t .m{color:var(--ok)}
+.ruang .diff .dl.h{background:color-mix(in srgb,var(--bad) 16%,transparent)}
+.ruang .diff .dl.t{background:color-mix(in srgb,var(--ok) 18%,transparent)}
+.ruang .diff .dl.k{color:var(--muted)}
+.ruang .kartu .aksi{display:flex;gap:6px;flex-wrap:wrap}
 @media (max-width:899px){.camctl{bottom:calc(62% + 10px)}.sheet.min~.camctl{bottom:calc(146px + env(safe-area-inset-bottom,0px))}}
 @media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
 </style>
@@ -946,6 +970,8 @@ function masukRuang(i){
     if(nt){x.textAlign='right';x.font='700 30px JetBrains Mono,monospace';x.fillStyle=d?war.css:'#9ca3af';x.fillText(nt,w-44,178);x.textAlign='left';}
     x.fillStyle='#1f2937';x.font='500 32px Inter,sans-serif';bungkus(x,p.fase||'-',w-90,4).forEach((l,k)=>x.fillText(l,44,220+k*42));
     x.fillStyle='#6b7280';x.font='700 26px Inter,sans-serif';x.fillText('RINGKASAN',44,422);
+    if(d&&d.stateMtime){const n=hariLalu(d.stateMtime),k=kelasUmur(n); // umur catatan: normal / kuning 15-30 / merah >30 hari
+      x.textAlign='right';x.font='700 26px Inter,sans-serif';x.fillStyle=k==='merah'?'#dc2626':k==='kuning'?'#b45309':'#6b7280';x.fillText('STATE '+(n?n+' hr lalu':'hari ini'),w-44,422);x.textAlign='left';}
     x.fillStyle='#374151';x.font='400 28px Inter,sans-serif';bungkus(x,p.ringkasan||'-',w-90,4).forEach((l,k)=>x.fillText(l,44,464+k*38));
   };
   const tex=teksKanvas(M_,gambarPapan,1024,640);
@@ -954,7 +980,7 @@ function masukRuang(i){
   const rangka=new THREE.Mesh(punya(M_,new THREE.BoxGeometry(3.3,2.1,.04)),MAT.dark);rangka.position.y=2.05;rangka.castShadow=true;pg.add(rangka);
   [-1.3,1.3].forEach(x=>{const k=new THREE.Mesh(punya(M_,new THREE.BoxGeometry(.08,1.05,.08)),MAT.dark);k.position.set(x,.52,0);pg.add(k);});
   PRJ.ruang={g,milik:M_,p,balik,i,awal,war,papan:{tex,gambar:gambarPapan},detail:null,detailGagal:'',
-    chat:{riwayat:[],konteks:null,sibuk:false,tunggu:null,gagal:'',galat:'',muat:true,konfirm:false}};
+    chat:{riwayat:[],usulan:{},pesanUsulan:{},konteks:null,sibuk:false,tunggu:null,gagal:'',galat:'',muat:true,konfirm:false}};
   cam.goal=null;cam.tx=RUANG.x;cam.tz=RUANG.z-.3;cam.v=innerWidth>=900?8.2:9.5;
   panelRuang(p,war,i);perbaruiZona();muatDetail();muatChat();
 }
@@ -976,6 +1002,13 @@ function isiDetail(){
   if(r.detailGagal){el.append(buat('div','alasan',r.detailGagal));return;}
   const d=r.detail;if(!d){el.append(buat('div','alasan','Memuat detail proyek\u2026'));return;}
   const lebar=innerWidth>=900;
+  // Umur catatan + commit terakhir repo lokal
+  const um=buat('div','umur');
+  if(d.stateMtime){const n=hariLalu(d.stateMtime);const u=buat('span','u '+kelasUmur(n),'STATE diperbarui '+(n?n+' hari lalu':'hari ini'));u.title=new Date(d.stateMtime).toLocaleString('id-ID');um.append(u);}
+  else um.append(buat('span','u','STATE.md tidak ada'));
+  if(d.commit)um.append(buat('span','commit','Commit terakhir: '+d.commit.tgl+' · '+d.commit.pesan+' ('+d.commit.hash+')'));
+  else um.append(buat('span','commit','Commit terakhir: - ('+(d.commitAlasan||'tidak diketahui')+')'));
+  el.append(um);
   // Status (teks polos, textContent)
   const ds=buat('details');ds.open=lebar;ds.append(buat('summary','','Status sekarang'));
   if(d.status)ds.append(buat('div','status',d.status+(d.statusTerpotong?'\n\n(STATE.md dipotong di 64 KB)':'')));
@@ -1003,14 +1036,14 @@ const kbId=n=>((+n||0)/1024).toFixed(1).replace('.',',')+' KB';
 const usdChat=n=>'$'+(+n||0).toFixed(3).replace('.',',');
 function bangunChat(el){
   const buat=(tag,cls,teks)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(teks!=null)e.textContent=teks;return e;};
-  const kp=buat('div','kepala');kp.append(buat('span','lbl','Penjaga ruang'),buat('span','hapusw'));
+  const kp=buat('div','kepala');kp.append(buat('span','lbl','Planner ruang'),buat('span','hapusw'));
   const kt=buat('div','ktx');kt.id='ruangKtx';
-  const rw=buat('div','riwayat');rw.id='ruangRiwayat';rw.setAttribute('role','log');rw.setAttribute('aria-label','Riwayat chat penjaga ruang');
-  const mg=buat('div','mengetik','Penjaga mengetik…');mg.id='ruangMengetik';mg.hidden=true;mg.setAttribute('aria-live','polite');
+  const rw=buat('div','riwayat');rw.id='ruangRiwayat';rw.setAttribute('role','log');rw.setAttribute('aria-label','Riwayat chat planner ruang');
+  const mg=buat('div','mengetik','Planner mengetik…');mg.id='ruangMengetik';mg.hidden=true;mg.setAttribute('aria-live','polite');
   const gl=buat('div','alasan galat');gl.id='ruangGalat';gl.hidden=true;gl.setAttribute('role','status');
   const kr=buat('div','kirim'),iw=buat('div','inwrap');
-  const ta=buat('textarea','grow');ta.id='ruangIn';ta.rows=1;ta.placeholder='Tanya soal proyek ini, mis. "langkah berikutnya apa?"';
-  ta.setAttribute('aria-label','Pesan ke penjaga ruang');ta.setAttribute('aria-describedby','ruangHit');
+  const ta=buat('textarea','grow');ta.id='ruangIn';ta.rows=1;ta.placeholder='Mis. "langkah berikutnya apa?" atau "X sudah selesai, catat"';
+  ta.setAttribute('aria-label','Pesan ke planner ruang');ta.setAttribute('aria-describedby','ruangHit');
   const ht=buat('div','hitung');ht.id='ruangHit';ht.hidden=true;ht.setAttribute('aria-live','polite');
   const bt=buat('button','btn sm','Kirim');bt.type='button';bt.id='ruangKirim';
   iw.append(ta,ht);kr.append(iw,bt);
@@ -1032,7 +1065,7 @@ function muatChat(){
   if(!BR.on){c.muat=false;c.gagal=location.protocol==='file:'?'Kantor dibuka dari file, tanpa server: chat penjaga tidak tersedia.':'Mode Simulasi: chat penjaga hanya ada lewat server kantor (mode Laptop).';isiChat();return;}
   isiChat();
   api('proyek/'+encodeURIComponent(r.p.slug)+'/chat').then(j=>{if(PRJ.ruang!==r)return;
-      c.muat=false;c.riwayat=Array.isArray(j.riwayat)?j.riwayat:[];c.konteks=j.konteks||null;c.sibuk=!!j.sibuk;isiChat();
+      c.muat=false;c.riwayat=Array.isArray(j.riwayat)?j.riwayat:[];c.usulan=j.usulan||{};c.konteks=j.konteks||null;c.sibuk=!!j.sibuk;isiChat();
       if(c.sibuk)setTimeout(()=>{if(PRJ.ruang===r)muatChat();},2500);}, // jawaban pesan sebelumnya belum masuk: cek lagi
     e=>{if(PRJ.ruang!==r)return;c.muat=false;c.gagal='Chat tidak bisa dimuat: '+e.message;isiChat();});
 }
@@ -1044,7 +1077,7 @@ function kirimChatRuang(){
   c.tunggu=m;c.galat='';c.konfirm=false;isiChat();gulirChat();
   api('proyek/'+encodeURIComponent(r.p.slug)+'/chat',{pesan:m}).then(j=>{
     c.tunggu=null;if(PRJ.ruang!==r)return;
-    if(Array.isArray(j.riwayat))c.riwayat=j.riwayat;if(j.konteks)c.konteks=j.konteks;
+    if(Array.isArray(j.riwayat))c.riwayat=j.riwayat;if(j.usulan)Object.assign(c.usulan,j.usulan);if(j.konteks)c.konteks=j.konteks;
     const t=$('ruangIn');if(t&&t.value.trim()===m)t.value='';
     isiChat();gulirChat();
   },e=>{c.tunggu=null;if(PRJ.ruang!==r)return;c.galat=e.message;isiChat();}); // teks pesan tetap di kotak, bisa dikirim ulang
@@ -1059,23 +1092,70 @@ function teksJawaban(el,t){String(t||'').split(/(\*\*[^*\n]+\*\*|`[^`\n]+`)/).fo
   if(/^\*\*[^*\n]+\*\*$/.test(x)){const b=document.createElement('b');b.textContent=x.slice(2,-2);el.append(b);}
   else if(/^`[^`\n]+`$/.test(x)){const k=document.createElement('code');k.textContent=x.slice(1,-1);el.append(k);}
   else if(x)el.append(x);});}
+// Umur catatan: hari sejak file diubah; normal <=14, kuning 15-30, merah >30.
+const hariLalu=ms=>Math.max(0,Math.floor((Date.now()-ms)/864e5));
+const kelasUmur=n=>n>30?'merah':n>14?'kuning':'ok';
+// Jawaban planner: blok ```prompt-cc``` jadi kartu + Salin; ```usulan-vault``` jadi kartu usulan dari SERVER (bukan JSON di teks).
+const RE_PAGAR=/```([A-Za-z-]*)[^\S\n]*\n([\s\S]*?)\n?```/g;
+function isiJawaban(el,m,r){
+  const t=String(m.teks||'');let i=0,x,adaUsulan=false;RE_PAGAR.lastIndex=0;
+  const teks=s=>{s=s.replace(/^\n+|\n+$/g,'');if(s)teksJawaban(el,s);};
+  while((x=RE_PAGAR.exec(t))){
+    teks(t.slice(i,x.index));const j=x[1].toLowerCase();
+    if(j==='prompt-cc')el.append(kartuPrompt(x[2]));
+    else if(j==='usulan-vault'){if(!adaUsulan)el.append(kartuUsulan(r,m.usulan));adaUsulan=true;}
+    else{const pre=document.createElement('pre');pre.textContent=x[2];el.append(pre);}
+    i=RE_PAGAR.lastIndex;}
+  teks(t.slice(i));
+}
+function salin(teks){
+  if(navigator.clipboard&&window.isSecureContext)return navigator.clipboard.writeText(teks);
+  return new Promise((ok,gagal)=>{const ta=document.createElement('textarea');ta.value=teks;ta.setAttribute('readonly','');ta.style.position='fixed';ta.style.opacity='0';document.body.append(ta);ta.select();
+    let b=false;try{b=document.execCommand('copy');}catch(e){}ta.remove();b?ok():gagal(new Error('Browser menolak menyalin; pilih teksnya manual.'));});
+}
+function kartuPrompt(isi){
+  const buat=(tag,cls,teks)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(teks!=null)e.textContent=teks;return e;};
+  const k=buat('div','kartu prompt'),kk=buat('div','kk'),b=buat('button','btn sm','Salin prompt');b.type='button';
+  b.addEventListener('click',()=>salin(isi).then(()=>{b.textContent='Tersalin ✓';toast('Prompt disalin. Tempel ke Claude Code.');setTimeout(()=>{b.textContent='Salin prompt';},2000);},e=>toast(e.message,true)));
+  kk.append(buat('span','lbl','Prompt untuk Claude Code'),b);k.append(kk,buat('pre','',isi));return k;
+}
+const TEKS_STATUS={menunggu:'Menunggu ACC',diterapkan:'Diterapkan',ditolak:'Ditolak','tidak-valid':'Tidak valid',kedaluwarsa:'Kedaluwarsa'};
+function kartuUsulan(r,id){
+  const buat=(tag,cls,teks)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(teks!=null)e.textContent=teks;return e;};
+  const c=r.chat,u=id&&c.usulan[id],k=buat('div','kartu usulan');
+  if(!u){k.append(buat('div','galat','Usulan vault tidak tersimpan di server (tidak bisa di-ACC).'));return k;}
+  const kk=buat('div','kk');kk.append(buat('span','lbl','Usulan update vault'+(u.file&&u.file.length?' · '+u.file.join(', '):'')),buat('span','st '+u.status,TEKS_STATUS[u.status]||u.status));k.append(kk);
+  if(u.alasan)k.append(buat('div','alasanu',u.alasan));
+  if(u.galat)k.append(buat('div','galat',(u.status==='tidak-valid'?'Tidak valid, tidak bisa di-ACC: ':'')+u.galat));
+  (u.diff||[]).forEach(f=>{const dv=buat('div','diff');dv.setAttribute('aria-label','Perubahan '+f.file);dv.append(buat('div','fh',f.file+' · mulai baris '+f.mulai));
+    (f.baris||[]).forEach(b=>{const l=buat('div','dl '+(b.j==='-'?'h':b.j==='+'?'t':'k'));const g=buat('span','m',b.j==='-'?'−':b.j==='+'?'+':'');g.setAttribute('aria-label',b.j==='-'?'hapus':b.j==='+'?'tambah':'tetap');l.append(g,buat('span','',b.t));dv.append(l);});k.append(dv);});
+  const pesan=c.pesanUsulan[id];if(pesan&&(u.status==='menunggu'||!u.galat))k.append(buat('div','galat',pesan)); // status berubah di server: galat server sudah menjelaskan
+  if(u.status==='menunggu'&&BR.on){const ak=buat('div','aksi');
+    const acc=buat('button','btn sm','ACC, tulis ke vault'),tolak=buat('button','btn ghost sm','Tolak');acc.type=tolak.type='button';
+    const jalan=(aksi)=>{acc.disabled=tolak.disabled=true;
+      api('proyek/'+encodeURIComponent(r.p.slug)+'/'+aksi,{id}).then(j=>{if(PRJ.ruang!==r)return;delete c.pesanUsulan[id];if(j.usulan)c.usulan[id]=j.usulan;if(Array.isArray(j.riwayat))c.riwayat=j.riwayat;
+          isiChat();if(aksi==='terapkan'){toast('Ditulis ke '+(j.file||[]).join(', ')+'. Versi lama dicadangkan.');r.detail=null;muatDetail();muatChat();}else toast('Usulan ditolak');},
+        e=>{if(PRJ.ruang!==r)return;c.pesanUsulan[id]=e.message;isiChat();muatChat();});}; // status terbaru (mis. kedaluwarsa) dari server
+    acc.addEventListener('click',()=>jalan('terapkan'));tolak.addEventListener('click',()=>jalan('tolak'));ak.append(acc,tolak);k.append(ak);}
+  return k;
+}
 function isiChat(){
   const r=PRJ.ruang,box=r&&$('ruangChat');if(!box)return;const c=r.chat;
   const buat=(tag,cls,teks)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(teks!=null)e.textContent=teks;return e;};
   const tombol=(teks,fn,cls)=>{const b=buat('button','btn sm '+(cls||'ghost'),teks);b.type='button';b.addEventListener('click',fn);return b;};
   // Konteks yang dikirim ke penjaga + tanda terpotong
   const kt=$('ruangKtx');kt.replaceChildren();
-  if(c.konteks){const s=c.konteks.state,n=c.konteks.next;
-    kt.append('Konteks: STATE '+(s.ada?kbId(s.byte):'tidak ada')+' · NEXT '+(n.ada?kbId(n.byte):'tidak ada'));
-    const pot=[s.terpotong&&'STATE dipotong di '+kbId(s.batas)+' dari '+kbId(s.asli),n.terpotong&&'NEXT dipotong di '+kbId(n.batas)+' dari '+kbId(n.asli)].filter(Boolean);
-    if(pot.length)kt.append(buat('br'),buat('b','','⚠ Terpotong: '+pot.join('; ')+'. Penjaga tidak melihat sisanya.'));}
+  if(c.konteks){const s=c.konteks.state,n=c.konteks.next,wf=c.konteks.workflow||{};
+    kt.append('Konteks: workflow '+(wf.ada?kbId(wf.byte):'tidak ada')+' · STATE '+(s.ada?kbId(s.byte):'tidak ada')+' · NEXT '+(n.ada?kbId(n.byte):'tidak ada')+' · git '+(c.konteks.git?c.konteks.git+' commit':'-'));
+    const pot=[wf.terpotong&&'workflow dipotong di '+kbId(wf.batas)+' dari '+kbId(wf.asli),s.terpotong&&'STATE dipotong di '+kbId(s.batas)+' dari '+kbId(s.asli),n.terpotong&&'NEXT dipotong di '+kbId(n.batas)+' dari '+kbId(n.asli)].filter(Boolean);
+    if(pot.length)kt.append(buat('br'),buat('b','','⚠ Terpotong: '+pot.join('; ')+'. Planner tidak melihat sisanya.'));}
   else if(c.muat)kt.textContent='Memuat konteks…';
   // Riwayat
   const rw=$('ruangRiwayat');rw.replaceChildren();
-  c.riwayat.forEach(m=>{const kamu=m.dari==='kamu',d=buat('div','psn '+(kamu?'kamu':'penjaga'));if(kamu)d.textContent=m.teks;else teksJawaban(d,m.teks);
+  c.riwayat.forEach(m=>{const kamu=m.dari==='kamu',d=buat('div','psn '+(kamu?'kamu':m.dari==='sistem'?'sistem':'penjaga'));if(kamu||m.dari==='sistem')d.textContent=m.teks;else isiJawaban(d,m,r);
     if(!kamu&&m.biaya!=null)d.append(buat('span','biaya','setara '+usdChat(m.biaya)+(m.token?' · '+fmtN(Math.round(m.token/100)/10)+'k token':'')));rw.append(d);});
   if(c.tunggu)rw.append(buat('div','psn kamu tunda',c.tunggu));
-  if(!c.riwayat.length&&!c.tunggu&&!c.muat&&!c.gagal)rw.append(buat('div','alasan','Belum ada obrolan. Penjaga hanya tahu baris INDEX, STATE.md, dan NEXT.md proyek ini, dan tidak bisa mengubah file. Tiap pesan memakai kuota akun agen.'));
+  if(!c.riwayat.length&&!c.tunggu&&!c.muat&&!c.gagal)rw.append(buat('div','alasan','Belum ada obrolan. Planner ruang mengikuti workflow.md dan hanya tahu baris INDEX, STATE.md, NEXT.md, dan git log proyek ini. Usulan perubahan STATE/NEXT baru ditulis setelah kamu ACC. Tiap pesan memakai kuota akun agen.'));
   $('ruangMengetik').hidden=!(c.tunggu||c.sibuk);
   const gl=$('ruangGalat'),gt=c.gagal||c.galat||'';gl.textContent=gt;gl.hidden=!gt;
   // Hapus riwayat, dengan konfirmasi di tempat
@@ -1111,7 +1191,7 @@ function panelRuang(p,war,i){
   if(p.fase)el.append(buat('div','lbl','Fase'),buat('div','isi',p.fase));
   if(p.ringkasan)el.append(buat('div','lbl','Ringkasan'),buat('div','isi',p.ringkasan));
   const det=buat('div','detail');det.id='ruangDetail';det.setAttribute('aria-live','polite');el.append(det);
-  const ch=buat('section','chat');ch.id='ruangChat';ch.setAttribute('aria-label','Chat penjaga ruang');bangunChat(ch);el.append(ch);
+  const ch=buat('section','chat');ch.id='ruangChat';ch.setAttribute('aria-label','Chat planner ruang');bangunChat(ch);el.append(ch);
   el.hidden=false;el.scrollTop=0;document.body.classList.add('di-ruang');letakCamctl();
 }
 const diLorong=()=>!PRJ.ruang&&cam.tz>LOR.z0-1;
